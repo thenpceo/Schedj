@@ -1,9 +1,11 @@
 export type Priority = "urgent" | "normal" | "do_not_inspect";
+export type TripType = "day_trip" | "multi_day";
 
 // ── Constants ──
 export const IRS_MILEAGE_RATE = 0.70;       // $/mile 2025
 export const HOTEL_NIGHTLY_RATE = 120;       // $/night estimate
 export const LUNCH_BREAK_MINUTES = 30;
+export const DEFAULT_DAY_TRIP_THRESHOLD_MINUTES = 180; // 3 hours one-way
 export const AVAILABLE_CERTIFICATIONS = [
   "NOP Crop",
   "NOP Handling",
@@ -49,6 +51,26 @@ export interface Farm {
   notes: string;
 }
 
+// ── Separate preferences for day trips vs. travel trips ──
+export interface DayTripPreferences {
+  availableDays: string[];       // e.g., ["Mon", "Wed", "Fri"]
+  maxDailyInspections: number;
+  maxOneWayMiles: number;        // max one-way distance for day trips
+}
+
+export interface TravelTripPreferences {
+  availableDays: string[];       // typically all 7 days on travel
+  maxDailyInspections: number;
+  preferredTripLengthDays: number;
+  restDaysBetweenTrips: number;
+  tripStyle: "pinwheel" | "linear";
+}
+
+export interface LunchPreference {
+  takeLunchBreak: boolean;       // false = eat while driving
+  lunchBreakMinutes: number;     // only used if takeLunchBreak = true
+}
+
 export interface InspectorPreferences {
   // Inspector profile
   inspectorName: string;
@@ -74,6 +96,11 @@ export interface InspectorPreferences {
   // Scheduling
   annualInspectionTarget: number;
   startDate: string; // ISO date - when to start scheduling
+  // ── v2: Day trip vs. travel trip split ──
+  dayTripPrefs: DayTripPreferences;
+  travelTripPrefs: TravelTripPreferences;
+  lunchPreference: LunchPreference;
+  dayTripThresholdMinutes: number; // one-way drive time cutoff (default 180 = 3h)
 }
 
 export interface ScheduledInspection {
@@ -110,6 +137,9 @@ export interface Trip {
   endDate: string;
   estimatedTravelCost: number;
   overnightsRequired: number;
+  // v2
+  tripType: TripType;
+  clusterId?: string; // links back to FarmCluster
 }
 
 export interface Schedule {
@@ -129,4 +159,47 @@ export interface ContactScript {
   callScript: string;
 }
 
-export type AppStep = "upload" | "preferences" | "schedule" | "export";
+export type AppStep = "upload" | "analyze" | "plan";
+
+// ── v2: Region analysis types ──
+export interface FarmCluster {
+  id: string;
+  label: string;                    // e.g., "Central Pennsylvania"
+  farms: Farm[];
+  centroid: { lat: number; lng: number };
+  avgDistanceFromHomeMiles: number;
+  driveTimeFromHomeMinutes: number;
+  tripType: TripType;
+  urgentCount: number;
+  totalEstimatedHours: number;
+  suggestedTripDays: number;
+  completionWindows: { earliest: string; latest: string };
+}
+
+export interface RegionAnalysis {
+  clusters: FarmCluster[];
+  dayTripFarms: Farm[];
+  multiDayFarms: Farm[];
+  totalFarms: number;
+  urgentFarms: Farm[];
+  warnings: string[];
+}
+
+// ── v2: Trip planning types ──
+export interface TripPlan {
+  clusterId: string;
+  tripType: TripType;
+  preferredMonth?: string;         // "2026-03", "2026-04", etc.
+  preferredStartDate?: string;     // ISO date
+  locked: boolean;
+  farms: Farm[];
+}
+
+// ── v2: Schedule editing types ──
+export interface ScheduleEdit {
+  type: "move_inspection" | "change_date" | "mark_unavailable" | "remove_inspection";
+  inspectionFarmId: string;
+  fromDate?: string;
+  toDate?: string;
+  unavailableDates?: string[];
+}

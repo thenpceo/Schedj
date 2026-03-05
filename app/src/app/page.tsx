@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import {
   Upload,
-  SlidersHorizontal,
+  BarChart3,
   CalendarDays,
   Check,
   ArrowLeft,
@@ -12,24 +12,31 @@ import {
   MapPin,
   Loader2,
 } from "lucide-react";
-import { Farm, InspectorPreferences, Schedule, AppStep } from "@/lib/types";
-import { generateSchedule } from "@/lib/scheduler";
+import { Farm, InspectorPreferences, AppStep, RegionAnalysis as RegionAnalysisType, TripPlan, ScheduleEdit } from "@/lib/types";
+import { analyzeRegions } from "@/lib/analyzer";
+import { applyEdit } from "@/lib/schedule-editor";
 import { geocodeFarms, countUngeocoded } from "@/lib/geocode";
+import { SAMPLE_PREFERENCES } from "@/lib/sample-data";
+import { useScheduler } from "@/hooks/useScheduler";
 import FileUpload from "@/components/FileUpload";
-import PreferencesForm from "@/components/PreferencesForm";
-import ScheduleView from "@/components/ScheduleView";
+import SchedulePanel from "@/components/SchedulePanel";
+import RegionAnalysis from "@/components/RegionAnalysis";
+import TripPlanner from "@/components/TripPlanner";
+import SplitScreenLayout from "@/components/SplitScreenLayout";
+import PreferencesPanel from "@/components/PreferencesPanel";
 
 const STEPS: { key: AppStep; label: string; shortLabel: string; icon: React.ElementType }[] = [
   { key: "upload", label: "Upload Data", shortLabel: "Upload", icon: Upload },
-  { key: "preferences", label: "Preferences", shortLabel: "Prefs", icon: SlidersHorizontal },
-  { key: "schedule", label: "Schedule", shortLabel: "Schedule", icon: CalendarDays },
+  { key: "analyze", label: "Analyze", shortLabel: "Analyze", icon: BarChart3 },
+  { key: "plan", label: "Plan", shortLabel: "Plan", icon: CalendarDays },
 ];
 
 export default function Home() {
   const [step, setStep] = useState<AppStep>("upload");
   const [farms, setFarms] = useState<Farm[]>([]);
-  const [prefs, setPrefs] = useState<InspectorPreferences | null>(null);
-  const [schedule, setSchedule] = useState<Schedule | null>(null);
+  const [prefs, setPrefs] = useState<InspectorPreferences>(SAMPLE_PREFERENCES);
+  const [tripPlans, setTripPlans] = useState<TripPlan[]>([]);
+  const [farmUnavailableDates, setFarmUnavailableDates] = useState<Record<string, string[]>>({});
 
   // Geocoding state
   const [isGeocoding, setIsGeocoding] = useState(false);
@@ -38,13 +45,20 @@ export default function Home() {
 
   const stepIndex = STEPS.findIndex((s) => s.key === step);
 
+  // Compute region analysis when we have farms
+  const regionAnalysis: RegionAnalysisType | null = useMemo(() => {
+    if (farms.length === 0) return null;
+    const inspectable = farms.filter((f) => f.priority !== "do_not_inspect");
+    if (inspectable.length === 0) return null;
+    return analyzeRegions(inspectable, prefs);
+  }, [farms, prefs]);
+
   const handleFarmsLoaded = useCallback((loadedFarms: Farm[], _skipped: Farm[]) => {
     setFarms(loadedFarms);
     setGeocodeError(null);
   }, []);
 
-  const handleContinueToPreferences = useCallback(async () => {
-    // Check if farms need geocoding (lat=0, lng=0)
+  const handleContinueToAnalyze = useCallback(async () => {
     const needsGeo = farms.filter((f) => f.lat === 0 && f.lng === 0).length;
 
     if (needsGeo > 0) {
@@ -66,24 +80,39 @@ export default function Home() {
         }
 
         setIsGeocoding(false);
-        setStep("preferences");
+        setStep("analyze");
       } catch {
         setIsGeocoding(false);
         setGeocodeError("Geocoding failed. Please check your internet connection and try again.");
       }
     } else {
-      setStep("preferences");
+      setStep("analyze");
     }
   }, [farms]);
 
-  const handlePrefsSubmit = useCallback(
-    (submittedPrefs: InspectorPreferences) => {
+  // Live scheduler: recomputes whenever prefs, tripPlans, or unavailableDates change
+  const schedulerPrefs = step === "plan" ? prefs : null;
+  const { schedule, isComputing } = useScheduler(
+    farms,
+    schedulerPrefs,
+    tripPlans.length > 0 ? tripPlans : undefined,
+    Object.keys(farmUnavailableDates).length > 0 ? farmUnavailableDates : undefined
+  );
+
+  const handleGenerateFromTripPlanner = useCallback(
+    (plans: TripPlan[], submittedPrefs: InspectorPreferences) => {
       setPrefs(submittedPrefs);
-      const result = generateSchedule(farms, submittedPrefs);
-      setSchedule(result);
-      setStep("schedule");
+      setTripPlans(plans);
+      setStep("plan");
     },
-    [farms]
+    []
+  );
+
+  const handleScheduleEdit = useCallback(
+    (edit: ScheduleEdit) => {
+      setFarmUnavailableDates((prev) => applyEdit(edit, prev));
+    },
+    []
   );
 
   return (
@@ -211,26 +240,55 @@ export default function Home() {
                   )}
 
                   <button
-                    onClick={handleContinueToPreferences}
+                    onClick={handleContinueToAnalyze}
                     disabled={isGeocoding}
                     className="w-full py-3.5 px-6 bg-gradient-to-r from-primary-600 to-primary-700 text-white font-semibold rounded-[var(--radius-lg)] hover:from-primary-700 hover:to-primary-800 transition-all duration-200 shadow-md shadow-primary-600/20 cursor-pointer active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {isGeocoding ? "Geocoding..." : "Continue to Preferences"}
+                    {isGeocoding ? "Geocoding..." : "Analyze Regions"}
                   </button>
                 </div>
               )}
             </>
           )}
 
-          {step === "preferences" && (
-            <PreferencesForm
-              onSubmit={handlePrefsSubmit}
-              farmCount={farms.length}
-            />
+          {step === "analyze" && regionAnalysis && (
+            <div className="max-w-3xl mx-auto">
+              <RegionAnalysis analysis={regionAnalysis} />
+              <TripPlanner
+                analysis={regionAnalysis}
+                prefs={prefs}
+                onGenerateSchedule={handleGenerateFromTripPlanner}
+              />
+            </div>
           )}
 
-          {step === "schedule" && schedule && (
-            <ScheduleView schedule={schedule} prefs={prefs!} />
+          {step === "plan" && (
+            <SplitScreenLayout
+              left={
+                <PreferencesPanel
+                  prefs={prefs}
+                  onChange={setPrefs}
+                  isComputing={isComputing}
+                />
+              }
+              right={
+                schedule ? (
+                  <SchedulePanel
+                    schedule={schedule}
+                    prefs={prefs}
+                    isComputing={isComputing}
+                    onEdit={handleScheduleEdit}
+                  />
+                ) : (
+                  <div className="flex items-center justify-center py-20">
+                    <div className="text-center">
+                      <Loader2 className="w-8 h-8 text-primary-400 animate-spin mx-auto mb-3" />
+                      <p className="text-sm text-primary-600/50">Generating schedule...</p>
+                    </div>
+                  </div>
+                )
+              }
+            />
           )}
         </div>
       </main>

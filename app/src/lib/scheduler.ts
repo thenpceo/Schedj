@@ -4,6 +4,8 @@ import {
   Schedule,
   Trip,
   TripDay,
+  TripPlan,
+  TripType,
   ScheduledInspection,
   IRS_MILEAGE_RATE,
   HOTEL_NIGHTLY_RATE,
@@ -23,7 +25,9 @@ const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 // ── Main entry point ──
 export function generateSchedule(
   farms: Farm[],
-  prefs: InspectorPreferences
+  prefs: InspectorPreferences,
+  tripPlans?: TripPlan[],
+  farmUnavailableDates?: Record<string, string[]>
 ): Schedule {
   if (farms.length === 0) {
     return emptySchedule();
@@ -45,6 +49,194 @@ export function generateSchedule(
   const selectedFarms = sortedByScore.slice(0, targetCount).map((s) => s.farm);
   const deferredFarms = sortedByScore.slice(targetCount).map((s) => s.farm);
 
+  // ── v2: Two-phase scheduling if trip plans provided ──
+  if (tripPlans && tripPlans.length > 0) {
+    return generateTwoPhaseSchedule(
+      selectedFarms, deferredFarms, prefs, tripPlans,
+      scored, certificationWarnings, startDate, farmUnavailableDates
+    );
+  }
+
+  // ── Legacy single-phase scheduling ──
+  return generateSinglePhaseSchedule(
+    selectedFarms, deferredFarms, prefs, scored,
+    certificationWarnings, startDate, farmUnavailableDates
+  );
+}
+
+// ── v2: Two-phase scheduling (multi-day first, then day trips) ──
+function generateTwoPhaseSchedule(
+  selectedFarms: Farm[],
+  deferredFarms: Farm[],
+  prefs: InspectorPreferences,
+  tripPlans: TripPlan[],
+  scored: { farm: Farm; score: number }[],
+  certificationWarnings: string[],
+  startDate: Date,
+  farmUnavailableDates?: Record<string, string[]>
+): Schedule {
+  const trips: Trip[] = [];
+  const scheduled = new Set<string>();
+  const blockedDates = new Set<string>(); // dates consumed by multi-day trips
+
+  // Phase 1: Schedule multi-day trips (user-planned)
+  const multiDayPlans = tripPlans
+    .filter((p) => p.tripType === "multi_day" && p.locked && p.farms.length > 0)
+    .sort((a, b) => {
+      const dateA = a.preferredStartDate || "9999";
+      const dateB = b.preferredStartDate || "9999";
+      return dateA.localeCompare(dateB);
+    });
+
+  for (const plan of multiDayPlans) {
+    const planStart = plan.preferredStartDate
+      ? parseISO(plan.preferredStartDate)
+      : new Date(startDate);
+
+    // Use travel trip prefs: all available days, maxed out
+    const travelPrefs: InspectorPreferences = {
+      ...prefs,
+      availableDays: prefs.travelTripPrefs?.availableDays || ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+      maxDailyInspections: prefs.travelTripPrefs?.maxDailyInspections || prefs.maxDailyInspections,
+      preferredTripLengthDays: prefs.travelTripPrefs?.preferredTripLengthDays || prefs.preferredTripLengthDays,
+      tripStyle: prefs.travelTripPrefs?.tripStyle || prefs.tripStyle,
+    };
+
+    const ordered = optimizeRoute(plan.farms, travelPrefs);
+    const tripDays = packIntoDays(ordered, travelPrefs, planStart, farmUnavailableDates);
+    if (tripDays.length === 0) continue;
+
+    const scheduledInTrip = new Set<string>();
+    for (const day of tripDays) {
+      blockedDates.add(day.date);
+      for (const insp of day.inspections) {
+        scheduled.add(insp.farm.id);
+        scheduledInTrip.add(insp.farm.id);
+      }
+    }
+
+    const trip = buildTrip(trips.length, tripDays, plan.farms.filter(f => scheduledInTrip.has(f.id)), prefs, "multi_day", plan.clusterId);
+    trips.push(trip);
+  }
+
+  // Phase 2: Schedule day trips (auto-scheduled around multi-day trips)
+  const dayTripFarms = selectedFarms.filter((f) => !scheduled.has(f.id));
+  if (dayTripFarms.length > 0) {
+    const dayTripPrefs: InspectorPreferences = {
+      ...prefs,
+      availableDays: prefs.dayTripPrefs?.availableDays || prefs.availableDays,
+      maxDailyInspections: prefs.dayTripPrefs?.maxDailyInspections || prefs.maxDailyInspections,
+      preferredTripLengthDays: 1, // day trips are always 1 day
+    };
+
+    const dayTrips = scheduleDayTrips(
+      dayTripFarms, dayTripPrefs, scored, startDate, blockedDates, farmUnavailableDates
+    );
+
+    for (const trip of dayTrips) {
+      trip.tripNumber = trips.length + 1;
+      trip.id = `trip-${trip.tripNumber}`;
+      trips.push(trip);
+      for (const day of trip.days) {
+        for (const insp of day.inspections) {
+          scheduled.add(insp.farm.id);
+        }
+      }
+    }
+  }
+
+  // Sort all trips by start date
+  trips.sort((a, b) => a.startDate.localeCompare(b.startDate));
+  trips.forEach((t, i) => { t.tripNumber = i + 1; t.id = `trip-${i + 1}`; });
+
+  return buildScheduleResult(trips, selectedFarms, deferredFarms, scheduled, certificationWarnings);
+}
+
+// Schedule day trips: cluster nearby farms, 1-day trips
+function scheduleDayTrips(
+  farms: Farm[],
+  prefs: InspectorPreferences,
+  scored: { farm: Farm; score: number }[],
+  startDate: Date,
+  blockedDates: Set<string>,
+  farmUnavailableDates?: Record<string, string[]>
+): Trip[] {
+  const trips: Trip[] = [];
+  const scheduled = new Set<string>();
+
+  // Cluster day trip farms
+  const avgDuration = farms.reduce((s, f) => s + f.estimatedDurationHours, 0) / farms.length;
+  const workHours = prefs.workEndHour - prefs.workStartHour;
+  const farmsPerDay = Math.min(prefs.maxDailyInspections, Math.max(1, Math.floor(workHours / avgDuration)));
+  const k = Math.max(1, Math.ceil(farms.length / Math.max(1, farmsPerDay)));
+  const clusters = kMeansCluster(farms, k);
+
+  // Sort clusters by urgency
+  const scoredClusters = clusters.map((cluster) => {
+    const maxScore = Math.max(...cluster.map((f) => scored.find((s) => s.farm.id === f.id)?.score ?? 0));
+    return { farms: cluster, maxScore };
+  });
+  scoredClusters.sort((a, b) => b.maxScore - a.maxScore);
+
+  let currentDate = new Date(startDate);
+
+  for (const cluster of scoredClusters) {
+    let remainingFarms = cluster.farms.filter((f) => !scheduled.has(f.id));
+    if (remainingFarms.length === 0) continue;
+
+    while (remainingFarms.length > 0) {
+      // Advance to earliest completion window
+      const earliestWindow = remainingFarms
+        .filter((f) => f.completionFrom)
+        .map((f) => parseISO(f.completionFrom))
+        .sort((a, b) => a.getTime() - b.getTime())[0];
+      if (earliestWindow && currentDate < earliestWindow) {
+        currentDate = new Date(earliestWindow);
+      }
+
+      // Skip blocked dates (used by multi-day trips)
+      currentDate = skipToAvailableDay(currentDate, prefs);
+      let safety = 0;
+      while (blockedDates.has(format(currentDate, "yyyy-MM-dd")) && safety < 365) {
+        currentDate = addDays(currentDate, 1);
+        currentDate = skipToAvailableDay(currentDate, prefs);
+        safety++;
+      }
+
+      const ordered = optimizeRoute(remainingFarms, prefs);
+      const tripDays = packIntoDays(ordered, prefs, currentDate, farmUnavailableDates);
+      if (tripDays.length === 0) break;
+
+      const scheduledInTrip = new Set<string>();
+      for (const day of tripDays) {
+        for (const insp of day.inspections) {
+          scheduled.add(insp.farm.id);
+          scheduledInTrip.add(insp.farm.id);
+        }
+      }
+
+      const trip = buildTrip(trips.length, tripDays, remainingFarms.filter(f => scheduledInTrip.has(f.id)), prefs, "day_trip");
+      trips.push(trip);
+
+      const lastTripDate = parseISO(tripDays[tripDays.length - 1].date);
+      currentDate = addDays(lastTripDate, 1);
+      remainingFarms = remainingFarms.filter((f) => !scheduledInTrip.has(f.id));
+    }
+  }
+
+  return trips;
+}
+
+// ── Legacy single-phase scheduling (backward-compatible) ──
+function generateSinglePhaseSchedule(
+  selectedFarms: Farm[],
+  deferredFarms: Farm[],
+  prefs: InspectorPreferences,
+  scored: { farm: Farm; score: number }[],
+  certificationWarnings: string[],
+  startDate: Date,
+  farmUnavailableDates?: Record<string, string[]>
+): Schedule {
   // Stage 2: Geographic clustering (only selected farms)
   const avgDuration =
     selectedFarms.reduce((s, f) => s + f.estimatedDurationHours, 0) / selectedFarms.length;
@@ -67,18 +259,11 @@ export function generateSchedule(
   });
 
   if (prefs.tripStyle === "pinwheel") {
-    // Sort by angle from home for sweep pattern
     scoredClusters.sort((a, b) => {
       const centroidA = centroid(a.farms);
       const centroidB = centroid(b.farms);
-      const angleA = Math.atan2(
-        centroidA.lat - prefs.homeLat,
-        centroidA.lng - prefs.homeLng
-      );
-      const angleB = Math.atan2(
-        centroidB.lat - prefs.homeLat,
-        centroidB.lng - prefs.homeLng
-      );
+      const angleA = Math.atan2(centroidA.lat - prefs.homeLat, centroidA.lng - prefs.homeLng);
+      const angleB = Math.atan2(centroidB.lat - prefs.homeLat, centroidB.lng - prefs.homeLng);
       return angleA - angleB;
     });
   } else {
@@ -91,13 +276,10 @@ export function generateSchedule(
   let currentDate = new Date(startDate);
 
   for (const cluster of scoredClusters) {
-    // Skip farms already scheduled (shouldn't happen, but safety check)
     let remainingFarms = cluster.farms.filter((f) => !scheduled.has(f.id));
     if (remainingFarms.length === 0) continue;
 
-    // A cluster may need multiple trips if it exceeds preferredTripLengthDays
     while (remainingFarms.length > 0) {
-      // Advance to the earliest completion window in remaining farms
       const earliestWindow = remainingFarms
         .filter((f) => f.completionFrom)
         .map((f) => parseISO(f.completionFrom))
@@ -107,14 +289,10 @@ export function generateSchedule(
         currentDate = new Date(earliestWindow);
       }
 
-      // Stage 3: Optimize route within remaining farms
       const ordered = optimizeRoute(remainingFarms, prefs);
-
-      // Stage 4: Pack into days (respects preferredTripLengthDays max)
-      const tripDays = packIntoDays(ordered, prefs, currentDate);
+      const tripDays = packIntoDays(ordered, prefs, currentDate, farmUnavailableDates);
       if (tripDays.length === 0) break;
 
-      // Mark scheduled farms and track what was packed
       const scheduledInTrip = new Set<string>();
       for (const day of tripDays) {
         for (const insp of day.inspections) {
@@ -123,57 +301,75 @@ export function generateSchedule(
         }
       }
 
-      // Calculate trip costs
+      // Determine trip type based on distance from home
       const tripFarms = remainingFarms.filter((f) => scheduledInTrip.has(f.id));
-      const totalMiles = tripDays.reduce((s, d) => s + d.totalDriveMiles, 0);
-      // Include drive from home and return home in total miles
-      const driveFromHomeMiles = tripDays[0].driveFromHomeMiles;
-      const driveToHomeMiles = tripDays[tripDays.length - 1].driveToHomeMiles;
-      const fullTripMiles = totalMiles + driveFromHomeMiles + driveToHomeMiles;
-
-      const overnights = tripDays.length > 1 ? tripDays.length - 1 : 0;
-
-      // Check if this is a day trip (all farms within maxDayTripMiles of home)
       const allNearHome = tripFarms.every(
-        (f) =>
-          driveDistanceBetween(prefs.homeLat, prefs.homeLng, f.lat, f.lng) <=
-          prefs.maxDayTripMiles
+        (f) => driveTimeBetween(prefs.homeLat, prefs.homeLng, f.lat, f.lng) <=
+          (prefs.dayTripThresholdMinutes || 180)
       );
-      const actualOvernights = allNearHome ? 0 : overnights;
+      const tripType: TripType = allNearHome ? "day_trip" : "multi_day";
 
-      const mileageCost = fullTripMiles * IRS_MILEAGE_RATE;
-      const hotelCost = actualOvernights * HOTEL_NIGHTLY_RATE;
-
-      const trip: Trip = {
-        id: `trip-${trips.length + 1}`,
-        tripNumber: trips.length + 1,
-        days: tripDays,
-        totalFarms: tripDays.reduce((s, d) => s + d.inspections.length, 0),
-        totalMiles: Math.round(fullTripMiles),
-        startDate: tripDays[0].date,
-        endDate: tripDays[tripDays.length - 1].date,
-        estimatedTravelCost: Math.round(mileageCost + hotelCost),
-        overnightsRequired: actualOvernights,
-      };
+      const trip = buildTrip(trips.length, tripDays, tripFarms, prefs, tripType);
       trips.push(trip);
 
-      // Advance past this trip + rest days
       const lastTripDate = parseISO(tripDays[tripDays.length - 1].date);
       currentDate = addDays(lastTripDate, prefs.restDaysBetweenTrips + 1);
-
-      // Remove scheduled farms from remaining
       remainingFarms = remainingFarms.filter((f) => !scheduledInTrip.has(f.id));
     }
   }
 
-  // Collect unscheduled farms (couldn't fit) + deferred (beyond annual target)
+  return buildScheduleResult(trips, selectedFarms, deferredFarms, scheduled, certificationWarnings);
+}
+
+// ── Shared helpers for building trip and schedule objects ──
+function buildTrip(
+  index: number,
+  tripDays: TripDay[],
+  tripFarms: Farm[],
+  prefs: InspectorPreferences,
+  tripType: TripType,
+  clusterId?: string
+): Trip {
+  const totalMiles = tripDays.reduce((s, d) => s + d.totalDriveMiles, 0);
+  const driveFromHomeMiles = tripDays[0].driveFromHomeMiles;
+  const driveToHomeMiles = tripDays[tripDays.length - 1].driveToHomeMiles;
+  const fullTripMiles = totalMiles + driveFromHomeMiles + driveToHomeMiles;
+  const overnights = tripDays.length > 1 ? tripDays.length - 1 : 0;
+
+  const allNearHome = tripFarms.every(
+    (f) => driveDistanceBetween(prefs.homeLat, prefs.homeLng, f.lat, f.lng) <= prefs.maxDayTripMiles
+  );
+  const actualOvernights = allNearHome ? 0 : overnights;
+
+  const mileageCost = fullTripMiles * IRS_MILEAGE_RATE;
+  const hotelCost = actualOvernights * HOTEL_NIGHTLY_RATE;
+
+  return {
+    id: `trip-${index + 1}`,
+    tripNumber: index + 1,
+    days: tripDays,
+    totalFarms: tripDays.reduce((s, d) => s + d.inspections.length, 0),
+    totalMiles: Math.round(fullTripMiles),
+    startDate: tripDays[0].date,
+    endDate: tripDays[tripDays.length - 1].date,
+    estimatedTravelCost: Math.round(mileageCost + hotelCost),
+    overnightsRequired: actualOvernights,
+    tripType,
+    clusterId,
+  };
+}
+
+function buildScheduleResult(
+  trips: Trip[],
+  selectedFarms: Farm[],
+  deferredFarms: Farm[],
+  scheduled: Set<string>,
+  certificationWarnings: string[]
+): Schedule {
   const unscheduledFromSelected = selectedFarms.filter((f) => !scheduled.has(f.id));
   const unscheduled = [...unscheduledFromSelected, ...deferredFarms];
   const allDates = trips.flatMap((t) => t.days.map((d) => d.date));
-  const totalEstimatedCost = trips.reduce(
-    (s, t) => s + t.estimatedTravelCost,
-    0
-  );
+  const totalEstimatedCost = trips.reduce((s, t) => s + t.estimatedTravelCost, 0);
 
   return {
     trips,
@@ -237,7 +433,7 @@ function scoreFarm(farm: Farm, referenceDate: Date): number {
 }
 
 // ── Stage 2: K-means geographic clustering ──
-function kMeansCluster(farms: Farm[], k: number): Farm[][] {
+export function kMeansCluster(farms: Farm[], k: number): Farm[][] {
   if (farms.length <= k) {
     return farms.map((f) => [f]);
   }
@@ -300,7 +496,7 @@ function kMeansCluster(farms: Farm[], k: number): Farm[][] {
   return clusters.filter((c) => c.length > 0);
 }
 
-function centroid(farms: Farm[]): { lat: number; lng: number } {
+export function centroid(farms: Farm[]): { lat: number; lng: number } {
   return {
     lat: farms.reduce((s, f) => s + f.lat, 0) / farms.length,
     lng: farms.reduce((s, f) => s + f.lng, 0) / farms.length,
@@ -413,7 +609,8 @@ function nearestNeighborOrder(
 function packIntoDays(
   farms: Farm[],
   prefs: InspectorPreferences,
-  startDate: Date
+  startDate: Date,
+  farmUnavailableDates?: Record<string, string[]>
 ): TripDay[] {
   const days: TripDay[] = [];
   let currentDate = skipToAvailableDay(new Date(startDate), prefs);
@@ -466,6 +663,13 @@ function packIntoDays(
     while (farmIdx < farms.length) {
       const farm = farms[farmIdx];
 
+      // Check farm-specific unavailable dates
+      const dateStr = format(currentDate, "yyyy-MM-dd");
+      if (farmUnavailableDates?.[farm.id]?.includes(dateStr)) {
+        farmIdx++;
+        continue;
+      }
+
       // Check completion window
       if (farm.completionFrom) {
         const windowStart = parseISO(farm.completionFrom);
@@ -486,10 +690,11 @@ function packIntoDays(
 
       const inspectionMinutes = farm.estimatedDurationHours * 60;
 
-      // Insert lunch break if needed
+      // Insert lunch break if needed (respects lunch preference)
       let lunchMinutes = 0;
-      if (!lunchTaken && minutesUsed > 5 * 60) {
-        lunchMinutes = LUNCH_BREAK_MINUTES;
+      const wantsLunch = prefs.lunchPreference?.takeLunchBreak !== false;
+      if (!lunchTaken && minutesUsed > 5 * 60 && wantsLunch) {
+        lunchMinutes = prefs.lunchPreference?.lunchBreakMinutes || LUNCH_BREAK_MINUTES;
         lunchTaken = true;
       }
 
@@ -646,6 +851,7 @@ function emptySchedule(): Schedule {
 export function scheduleToCSV(schedule: Schedule, prefs?: InspectorPreferences): string {
   const headers = [
     "Trip",
+    "Trip Type",
     "Day",
     "Date",
     "Start Time",
@@ -701,6 +907,7 @@ export function scheduleToCSV(schedule: Schedule, prefs?: InspectorPreferences):
 
         rows.push([
           `Trip ${trip.tripNumber}`,
+          trip.tripType === "multi_day" ? "Travel" : "Day Trip",
           day.dayLabel,
           insp.date,
           insp.startTime,

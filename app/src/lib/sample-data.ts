@@ -383,4 +383,22 @@ export const SAMPLE_PREFERENCES: InspectorPreferences = {
   maxDailyInspections: 3,
   annualInspectionTarget: 100,
   startDate: new Date().toISOString().split("T")[0],
+  // v2: Day trip vs. travel trip preferences
+  dayTripPrefs: {
+    availableDays: ["Mon", "Tue", "Wed", "Thu", "Fri"],
+    maxDailyInspections: 3,
+    maxOneWayMiles: 75,
+  },
+  travelTripPrefs: {
+    availableDays: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+    maxDailyInspections: 4,
+    preferredTripLengthDays: 4,
+    restDaysBetweenTrips: 2,
+    tripStyle: "linear",
+  },
+  lunchPreference: {
+    takeLunchBreak: true,
+    lunchBreakMinutes: 30,
+  },
+  dayTripThresholdMinutes: 180, // 3 hours one-way
 };
