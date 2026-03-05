@@ -15,6 +15,7 @@ import {
   driveTimeBetween,
   buildDistanceMatrix,
 } from "./geo";
+import { generateContactScript } from "./contact-scripts";
 import { addDays, format, parseISO, getDay, differenceInCalendarDays } from "date-fns";
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -38,18 +39,24 @@ export function generateSchedule(
     score: scoreFarm(f, startDate),
   }));
 
-  // Stage 2: Geographic clustering
+  // Stage 1b: Enforce annual inspection target — select top N by score
+  const targetCount = Math.min(prefs.annualInspectionTarget, farms.length);
+  const sortedByScore = [...scored].sort((a, b) => b.score - a.score);
+  const selectedFarms = sortedByScore.slice(0, targetCount).map((s) => s.farm);
+  const deferredFarms = sortedByScore.slice(targetCount).map((s) => s.farm);
+
+  // Stage 2: Geographic clustering (only selected farms)
   const avgDuration =
-    farms.reduce((s, f) => s + f.estimatedDurationHours, 0) / farms.length;
+    selectedFarms.reduce((s, f) => s + f.estimatedDurationHours, 0) / selectedFarms.length;
   const workHours = prefs.workEndHour - prefs.workStartHour;
   const farmsPerDay = Math.min(
     prefs.maxDailyInspections,
     Math.max(1, Math.floor(workHours / avgDuration))
   );
   const farmsPerTrip = farmsPerDay * prefs.preferredTripLengthDays;
-  const k = Math.max(1, Math.ceil(farms.length / Math.max(1, farmsPerTrip)));
+  const k = Math.max(1, Math.ceil(selectedFarms.length / Math.max(1, farmsPerTrip)));
 
-  const clusters = kMeansCluster(farms, k);
+  const clusters = kMeansCluster(selectedFarms, k);
 
   // Sort clusters: most urgent first (highest max score in cluster)
   const scoredClusters = clusters.map((cluster) => {
@@ -85,68 +92,83 @@ export function generateSchedule(
 
   for (const cluster of scoredClusters) {
     // Skip farms already scheduled (shouldn't happen, but safety check)
-    const clusterFarms = cluster.farms.filter((f) => !scheduled.has(f.id));
-    if (clusterFarms.length === 0) continue;
+    let remainingFarms = cluster.farms.filter((f) => !scheduled.has(f.id));
+    if (remainingFarms.length === 0) continue;
 
-    // Advance to the earliest completion window in this cluster
-    const earliestWindow = clusterFarms
-      .filter((f) => f.completionFrom)
-      .map((f) => parseISO(f.completionFrom))
-      .sort((a, b) => a.getTime() - b.getTime())[0];
+    // A cluster may need multiple trips if it exceeds preferredTripLengthDays
+    while (remainingFarms.length > 0) {
+      // Advance to the earliest completion window in remaining farms
+      const earliestWindow = remainingFarms
+        .filter((f) => f.completionFrom)
+        .map((f) => parseISO(f.completionFrom))
+        .sort((a, b) => a.getTime() - b.getTime())[0];
 
-    if (earliestWindow && currentDate < earliestWindow) {
-      currentDate = new Date(earliestWindow);
-    }
-
-    // Stage 3: Optimize route within cluster
-    const ordered = optimizeRoute(clusterFarms, prefs);
-
-    // Stage 4: Pack into days
-    const tripDays = packIntoDays(ordered, prefs, currentDate);
-    if (tripDays.length === 0) continue;
-
-    // Mark all as scheduled
-    for (const day of tripDays) {
-      for (const insp of day.inspections) {
-        scheduled.add(insp.farm.id);
+      if (earliestWindow && currentDate < earliestWindow) {
+        currentDate = new Date(earliestWindow);
       }
+
+      // Stage 3: Optimize route within remaining farms
+      const ordered = optimizeRoute(remainingFarms, prefs);
+
+      // Stage 4: Pack into days (respects preferredTripLengthDays max)
+      const tripDays = packIntoDays(ordered, prefs, currentDate);
+      if (tripDays.length === 0) break;
+
+      // Mark scheduled farms and track what was packed
+      const scheduledInTrip = new Set<string>();
+      for (const day of tripDays) {
+        for (const insp of day.inspections) {
+          scheduled.add(insp.farm.id);
+          scheduledInTrip.add(insp.farm.id);
+        }
+      }
+
+      // Calculate trip costs
+      const tripFarms = remainingFarms.filter((f) => scheduledInTrip.has(f.id));
+      const totalMiles = tripDays.reduce((s, d) => s + d.totalDriveMiles, 0);
+      // Include drive from home and return home in total miles
+      const driveFromHomeMiles = tripDays[0].driveFromHomeMiles;
+      const driveToHomeMiles = tripDays[tripDays.length - 1].driveToHomeMiles;
+      const fullTripMiles = totalMiles + driveFromHomeMiles + driveToHomeMiles;
+
+      const overnights = tripDays.length > 1 ? tripDays.length - 1 : 0;
+
+      // Check if this is a day trip (all farms within maxDayTripMiles of home)
+      const allNearHome = tripFarms.every(
+        (f) =>
+          driveDistanceBetween(prefs.homeLat, prefs.homeLng, f.lat, f.lng) <=
+          prefs.maxDayTripMiles
+      );
+      const actualOvernights = allNearHome ? 0 : overnights;
+
+      const mileageCost = fullTripMiles * IRS_MILEAGE_RATE;
+      const hotelCost = actualOvernights * HOTEL_NIGHTLY_RATE;
+
+      const trip: Trip = {
+        id: `trip-${trips.length + 1}`,
+        tripNumber: trips.length + 1,
+        days: tripDays,
+        totalFarms: tripDays.reduce((s, d) => s + d.inspections.length, 0),
+        totalMiles: Math.round(fullTripMiles),
+        startDate: tripDays[0].date,
+        endDate: tripDays[tripDays.length - 1].date,
+        estimatedTravelCost: Math.round(mileageCost + hotelCost),
+        overnightsRequired: actualOvernights,
+      };
+      trips.push(trip);
+
+      // Advance past this trip + rest days
+      const lastTripDate = parseISO(tripDays[tripDays.length - 1].date);
+      currentDate = addDays(lastTripDate, prefs.restDaysBetweenTrips + 1);
+
+      // Remove scheduled farms from remaining
+      remainingFarms = remainingFarms.filter((f) => !scheduledInTrip.has(f.id));
     }
-
-    // Calculate trip costs
-    const totalMiles = tripDays.reduce((s, d) => s + d.totalDriveMiles, 0);
-    const overnights = tripDays.length > 1 ? tripDays.length - 1 : 0;
-
-    // Check if this is a day trip (all farms within maxDayTripMiles of home)
-    const allNearHome = clusterFarms.every(
-      (f) =>
-        driveDistanceBetween(prefs.homeLat, prefs.homeLng, f.lat, f.lng) <=
-        prefs.maxDayTripMiles
-    );
-    const actualOvernights = allNearHome ? 0 : overnights;
-
-    const mileageCost = totalMiles * IRS_MILEAGE_RATE;
-    const hotelCost = actualOvernights * HOTEL_NIGHTLY_RATE;
-
-    const trip: Trip = {
-      id: `trip-${trips.length + 1}`,
-      tripNumber: trips.length + 1,
-      days: tripDays,
-      totalFarms: tripDays.reduce((s, d) => s + d.inspections.length, 0),
-      totalMiles: Math.round(totalMiles),
-      startDate: tripDays[0].date,
-      endDate: tripDays[tripDays.length - 1].date,
-      estimatedTravelCost: Math.round(mileageCost + hotelCost),
-      overnightsRequired: actualOvernights,
-    };
-    trips.push(trip);
-
-    // Advance past this trip + rest days
-    const lastTripDate = parseISO(tripDays[tripDays.length - 1].date);
-    currentDate = addDays(lastTripDate, prefs.restDaysBetweenTrips + 1);
   }
 
-  // Collect unscheduled farms
-  const unscheduled = farms.filter((f) => !scheduled.has(f.id));
+  // Collect unscheduled farms (couldn't fit) + deferred (beyond annual target)
+  const unscheduledFromSelected = selectedFarms.filter((f) => !scheduled.has(f.id));
+  const unscheduled = [...unscheduledFromSelected, ...deferredFarms];
   const allDates = trips.flatMap((t) => t.days.map((d) => d.date));
   const totalEstimatedCost = trips.reduce(
     (s, t) => s + t.estimatedTravelCost,
@@ -157,7 +179,7 @@ export function generateSchedule(
     trips,
     unscheduled,
     skipped: [],
-    totalFarms: farms.length,
+    totalFarms: scheduled.size,
     totalTrips: trips.length,
     dateRange: {
       start: allDates.length > 0 ? allDates[0] : "",
@@ -397,8 +419,9 @@ function packIntoDays(
   let currentDate = skipToAvailableDay(new Date(startDate), prefs);
   let farmIdx = 0;
   let dayNumber = 1;
+  const maxDays = prefs.preferredTripLengthDays;
 
-  while (farmIdx < farms.length) {
+  while (farmIdx < farms.length && days.length < maxDays) {
     currentDate = skipToAvailableDay(currentDate, prefs);
 
     const workMinutes = (prefs.workEndHour - prefs.workStartHour) * 60;
@@ -620,7 +643,7 @@ function emptySchedule(): Schedule {
 }
 
 // ── Export schedule as CSV ──
-export function scheduleToCSV(schedule: Schedule): string {
+export function scheduleToCSV(schedule: Schedule, prefs?: InspectorPreferences): string {
   const headers = [
     "Trip",
     "Day",
@@ -648,32 +671,52 @@ export function scheduleToCSV(schedule: Schedule): string {
     "Sampling Required",
     "Contact Status",
     "Notes",
+    "Trip Total Miles",
+    "Trip Overnights",
     "Est. Trip Cost",
+    "Email Subject",
+    "Email Body",
+    "Call Script",
   ];
 
   const rows: string[][] = [];
   for (const trip of schedule.trips) {
+    let isFirstInspOfTrip = true;
     for (const day of trip.days) {
       for (const insp of day.inspections) {
         const f = insp.farm;
+
+        // Generate contact script if prefs are available
+        let emailSubject = "";
+        let emailBody = "";
+        let callScript = "";
+        if (prefs) {
+          const script = generateContactScript(insp, prefs);
+          if (script) {
+            emailSubject = script.emailSubject;
+            emailBody = script.emailBody;
+            callScript = script.callScript;
+          }
+        }
+
         rows.push([
           `Trip ${trip.tripNumber}`,
           day.dayLabel,
           insp.date,
           insp.startTime,
           insp.endTime,
-          `"${f.name}"`,
+          csvEscape(f.name),
           f.nopId,
           f.auditNumber,
-          `"${f.address}"`,
+          csvEscape(f.address),
           f.city,
           f.state,
           f.zip,
           f.email,
           f.phone,
           f.priority === "urgent" ? "Urgent" : "Normal",
-          `"${f.services.join("; ")}"`,
-          `"${f.auditType}"`,
+          csvEscape(f.services.join("; ")),
+          csvEscape(f.auditType),
           String(f.estimatedDurationHours),
           String(insp.driveTimeFromPrevMinutes),
           String(insp.driveDistanceFromPrevMiles),
@@ -682,12 +725,29 @@ export function scheduleToCSV(schedule: Schedule): string {
           f.unannounced ? "Yes" : "No",
           f.samplingRequired ? "Yes" : "No",
           insp.contactStatus,
-          `"${f.notes}"`,
-          `$${trip.estimatedTravelCost}`,
+          csvEscape(f.notes),
+          // Only show trip-level stats on the first inspection of the trip
+          isFirstInspOfTrip ? String(trip.totalMiles) : "",
+          isFirstInspOfTrip ? String(trip.overnightsRequired) : "",
+          isFirstInspOfTrip ? `$${trip.estimatedTravelCost}` : "",
+          csvEscape(emailSubject),
+          csvEscape(emailBody),
+          csvEscape(callScript),
         ]);
+
+        isFirstInspOfTrip = false;
       }
     }
   }
 
   return [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+}
+
+function csvEscape(value: string): string {
+  if (!value) return "";
+  // Wrap in quotes if the value contains commas, quotes, or newlines
+  if (value.includes(",") || value.includes('"') || value.includes("\n")) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
 }

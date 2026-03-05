@@ -52,7 +52,7 @@ export default function ScheduleView({ schedule, prefs }: ScheduleViewProps) {
   };
 
   const exportCSV = () => {
-    const csv = scheduleToCSV(schedule);
+    const csv = scheduleToCSV(schedule, prefs);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -76,7 +76,7 @@ export default function ScheduleView({ schedule, prefs }: ScheduleViewProps) {
             Your Inspection Schedule
           </h2>
           <p className="text-sm text-primary-700/50">
-            {schedule.totalFarms} inspections across {schedule.totalTrips} trips
+            {schedule.totalFarms} inspections scheduled across {schedule.totalTrips} trips
             {schedule.dateRange.start && (
               <>
                 {" \u00B7 "}
