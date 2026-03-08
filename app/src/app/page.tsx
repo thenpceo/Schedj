@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import {
   Upload,
   BarChart3,
@@ -31,12 +31,42 @@ const STEPS: { key: AppStep; label: string; shortLabel: string; icon: React.Elem
   { key: "plan", label: "Plan", shortLabel: "Plan", icon: CalendarDays },
 ];
 
+const PREFS_STORAGE_KEY = "schedj-prefs";
+const PREFS_VERSION = 1;
+
+function loadPrefsFromStorage(): InspectorPreferences {
+  if (typeof window === "undefined") return SAMPLE_PREFERENCES;
+  try {
+    const raw = localStorage.getItem(PREFS_STORAGE_KEY);
+    if (!raw) return SAMPLE_PREFERENCES;
+    const parsed = JSON.parse(raw);
+    if (parsed.version !== PREFS_VERSION) return SAMPLE_PREFERENCES;
+    // Deep merge: use saved values but fall back to defaults for any missing keys
+    const { version: _, ...saved } = parsed;
+    return { ...SAMPLE_PREFERENCES, ...saved };
+  } catch {
+    return SAMPLE_PREFERENCES;
+  }
+}
+
 export default function Home() {
   const [step, setStep] = useState<AppStep>("upload");
   const [farms, setFarms] = useState<Farm[]>([]);
-  const [prefs, setPrefs] = useState<InspectorPreferences>(SAMPLE_PREFERENCES);
+  const [prefs, setPrefs] = useState<InspectorPreferences>(loadPrefsFromStorage);
   const [tripPlans, setTripPlans] = useState<TripPlan[]>([]);
   const [farmUnavailableDates, setFarmUnavailableDates] = useState<Record<string, string[]>>({});
+
+  // Persist preferences to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        PREFS_STORAGE_KEY,
+        JSON.stringify({ version: PREFS_VERSION, ...prefs })
+      );
+    } catch {
+      // Silently fail (private browsing, quota exceeded)
+    }
+  }, [prefs]);
 
   // Geocoding state
   const [isGeocoding, setIsGeocoding] = useState(false);
@@ -151,7 +181,14 @@ export default function Home() {
                       }`} />
                     )}
                     <button
-                      onClick={() => isClickable && setStep(s.key)}
+                      onClick={() => {
+                        if (!isClickable) return;
+                        if (s.key === "upload" || s.key === "analyze") {
+                          setTripPlans([]);
+                          setFarmUnavailableDates({});
+                        }
+                        setStep(s.key);
+                      }}
                       disabled={!isClickable && !isCurrent}
                       className={`
                         flex items-center gap-1.5 rounded-full transition-all duration-200
@@ -187,7 +224,14 @@ export default function Home() {
         {/* Back navigation */}
         {stepIndex > 0 && !isGeocoding && (
           <button
-            onClick={() => setStep(STEPS[stepIndex - 1].key)}
+            onClick={() => {
+              const target = STEPS[stepIndex - 1].key;
+              if (target === "upload" || target === "analyze") {
+                setTripPlans([]);
+                setFarmUnavailableDates({});
+              }
+              setStep(target);
+            }}
             className="mb-6 text-sm text-primary-600/70 hover:text-primary-700 inline-flex items-center gap-1.5 cursor-pointer transition-colors duration-200 group"
           >
             <ArrowLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform duration-200" />

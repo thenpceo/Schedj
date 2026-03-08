@@ -9,6 +9,7 @@ import {
   Briefcase,
 } from "lucide-react";
 import { FarmCluster, RegionAnalysis as RegionAnalysisType } from "@/lib/types";
+import { getAgencyColor } from "@/lib/agency-colors";
 
 interface RegionAnalysisProps {
   analysis: RegionAnalysisType;
@@ -171,6 +172,29 @@ function ClusterCard({ cluster }: { cluster: FarmCluster }) {
           )}
         </div>
       )}
+
+      {/* Agency mix (only when 2+ agencies) */}
+      {(() => {
+        const agencyCounts: Record<string, number> = {};
+        for (const f of cluster.farms) {
+          const agency = f.sourceAgency || "Unknown";
+          agencyCounts[agency] = (agencyCounts[agency] || 0) + 1;
+        }
+        const entries = Object.entries(agencyCounts);
+        if (entries.length < 2) return null;
+        return (
+          <div className="mt-3 pt-3 border-t border-earth-100 flex flex-wrap gap-1.5">
+            {entries.map(([agency, count]) => (
+              <span
+                key={agency}
+                className={`inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold uppercase rounded border ${getAgencyColor(agency)}`}
+              >
+                {agency}: {count}
+              </span>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* Farm list preview */}
       <div className="mt-3 pt-3 border-t border-earth-100">

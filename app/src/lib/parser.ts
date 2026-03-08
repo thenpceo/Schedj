@@ -2,6 +2,15 @@ import * as XLSX from "xlsx";
 import Papa from "papaparse";
 import { Farm, Priority } from "./types";
 
+export type DetectedFormat = "intact" | "ccof" | "generic";
+
+export interface ParseResult {
+  farms: Farm[];
+  skipped: Farm[];
+  errors: string[];
+  detectedFormat: DetectedFormat;
+}
+
 interface RawRow {
   [key: string]: string | number | boolean | undefined;
 }
@@ -38,13 +47,68 @@ const INTACT_COLUMNS = {
   auditNo: "Audit no.",
 };
 
+// ── CCOF column names (different Intact Platform configuration) ──
+const CCOF_COLUMNS = {
+  priority: "Insp Priority",
+  name: "Name",
+  nopId: "Client ID",
+  auditNumber: "Inspection no.",
+  servicesOriginal: "Services (original)",
+  inspectionType: "Inspection type (original)",
+  state: "State",
+  country: "Country",
+  zip: "ZIP code",
+  completionFrom: "Due After",
+  completionUntil: "Due by",
+  year: "Year",
+  assignedSites: "Assigned sites",
+  services: "Services",
+  idOther: "ID Other",
+};
+
+// ── Detect if this is a CCOF export ──
+function isCCOFExport(headers: string[]): boolean {
+  const hasClientId = headers.includes(CCOF_COLUMNS.nopId);
+  const hasDueBy = headers.includes(CCOF_COLUMNS.completionUntil);
+  const hasDueAfter = headers.includes(CCOF_COLUMNS.completionFrom);
+  return hasClientId && (hasDueBy || hasDueAfter);
+}
+
+// ── Detect export format from headers ──
+export function detectFormat(headers: string[]): DetectedFormat {
+  if (isIntactExport(headers)) return "intact";
+  if (isCCOFExport(headers)) return "ccof";
+  return "generic";
+}
+
 // ── Priority parsing ──
 function parsePriority(raw: string): Priority {
   const lower = (raw || "").toLowerCase().trim();
   if (lower.includes("do not inspect")) return "do_not_inspect";
   if (lower.includes("urgent")) return "urgent";
+  if (lower === "high") return "urgent"; // CCOF uses "High" for urgent
   if (lower.includes("ready") || lower.includes("normal")) return "normal";
   return "normal";
+}
+
+// ── Service name normalization map ──
+const SERVICE_NORMALIZATION: Record<string, string> = {
+  "nop grower": "NOP Crop",
+  "nop crop grower": "NOP Crop",
+};
+
+// ── Normalize a single service name ──
+function normalizeServiceName(raw: string): string {
+  // Strip numbered prefixes: "1.1 NOP Grower" → "NOP Grower"
+  let cleaned = raw.replace(/^\d+(\.\d+)*\s+/, "").trim();
+
+  // Check normalization map
+  const lower = cleaned.toLowerCase();
+  if (SERVICE_NORMALIZATION[lower]) {
+    return SERVICE_NORMALIZATION[lower];
+  }
+
+  return cleaned;
 }
 
 // ── Parse services string (semicolon or comma separated) ──
@@ -52,7 +116,7 @@ function parseServices(raw: string): string[] {
   if (!raw) return [];
   return raw
     .split(/[;,]/)
-    .map((s) => s.trim())
+    .map((s) => normalizeServiceName(s.trim()))
     .filter(Boolean);
 }
 
@@ -174,14 +238,101 @@ function parseIntactRow(row: RawRow, index: number): Farm {
     year: parseInt(get(INTACT_COLUMNS.year)) || new Date().getFullYear(),
     estimatedDurationHours: estimateDuration(services),
     notes: get(INTACT_COLUMNS.assignedSites) ? `Sites: ${get(INTACT_COLUMNS.assignedSites)}` : "",
+    sourceAgency: "",
   };
+}
+
+// ── Parse a CCOF row into a Farm ──
+function parseCCOFRow(row: RawRow, index: number): Farm {
+  const get = (col: string): string => {
+    const val = row[col];
+    if (val === undefined || val === null) return "";
+    return String(val).trim();
+  };
+
+  const state = get(CCOF_COLUMNS.state);
+  const zip = get(CCOF_COLUMNS.zip);
+  const services = parseServices(get(CCOF_COLUMNS.servicesOriginal));
+
+  return {
+    id: `farm-${index + 1}`,
+    name: get(CCOF_COLUMNS.name) || `Operation ${index + 1}`,
+    street: "",  // CCOF exports don't include street address
+    street2: "",
+    city: "",    // CCOF exports don't include city
+    state,
+    zip,
+    municipality: "",
+    country: get(CCOF_COLUMNS.country) || "UNITED STATES",
+    address: buildAddress("", "", "", state, zip), // ZIP centroid for geocoding
+    lat: 0,
+    lng: 0,
+    email: "",   // CCOF exports don't include email
+    phone: "",   // CCOF exports don't include phone
+    mobile: "",
+    priority: parsePriority(get(CCOF_COLUMNS.priority)),
+    auditType: get(CCOF_COLUMNS.inspectionType) || "",
+    nopId: get(CCOF_COLUMNS.nopId),
+    auditNumber: get(CCOF_COLUMNS.auditNumber),
+    services,
+    assignedSites: get(CCOF_COLUMNS.assignedSites),
+    completionFrom: parseDate(row[CCOF_COLUMNS.completionFrom]),
+    completionUntil: parseDate(row[CCOF_COLUMNS.completionUntil]),
+    unannounced: false,
+    samplingRequired: false,
+    year: parseInt(get(CCOF_COLUMNS.year)) || new Date().getFullYear(),
+    estimatedDurationHours: estimateDuration(services),
+    notes: get(CCOF_COLUMNS.assignedSites) ? `Sites: ${get(CCOF_COLUMNS.assignedSites)}` : "",
+    sourceAgency: "",
+  };
+}
+
+// ── Parse CCOF format ──
+function parseCCOFFormat(
+  rows: RawRow[],
+  errors: string[]
+): { farms: Farm[]; skipped: Farm[]; errors: string[] } {
+  const allFarms: Farm[] = [];
+  const skipped: Farm[] = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const farm = parseCCOFRow(rows[i], i);
+    if (!farm.name || farm.name === `Operation ${i + 1}`) {
+      continue;
+    }
+    if (farm.priority === "do_not_inspect") {
+      skipped.push(farm);
+    } else {
+      allFarms.push(farm);
+    }
+  }
+
+  const urgentCount = allFarms.filter((f) => f.priority === "urgent").length;
+
+  errors.push(`Detected CCOF format (${allFarms.length} inspections).`);
+  if (urgentCount > 0) {
+    errors.push(`${urgentCount} high-priority inspection(s) will be prioritized.`);
+  }
+  if (skipped.length > 0) {
+    errors.push(`${skipped.length} operation(s) marked "DO NOT INSPECT" were excluded.`);
+  }
+
+  const missingCoords = allFarms.filter((f) => f.lat === 0 && f.lng === 0);
+  if (missingCoords.length > 0) {
+    errors.push(
+      `${missingCoords.length} operation(s) need geocoding (no lat/lng). ZIP codes will be used for route estimation.`
+    );
+  }
+
+  return { farms: allFarms, skipped, errors };
 }
 
 // ── Main parse function: handles XLS, XLSX, and CSV ──
 export function parseFile(
   data: ArrayBuffer | string,
-  fileName: string
-): { farms: Farm[]; skipped: Farm[]; errors: string[] } {
+  fileName: string,
+  agency?: string
+): ParseResult {
   const errors: string[] = [];
   const ext = fileName.toLowerCase().split(".").pop();
 
@@ -200,7 +351,7 @@ export function parseFile(
 
       if (rawJson.length === 0) {
         errors.push("No data found in the spreadsheet.");
-        return { farms: [], skipped: [], errors };
+        return { farms: [], skipped: [], errors, detectedFormat: "generic" };
       }
 
       // Check if first row is a metadata row (Intact exports start with a title row)
@@ -226,7 +377,7 @@ export function parseFile(
       }
     } catch (e) {
       errors.push(`Failed to parse Excel file: ${(e as Error).message}`);
-      return { farms: [], skipped: [], errors };
+      return { farms: [], skipped: [], errors, detectedFormat: "generic" };
     }
   } else {
     // Parse CSV/TSV
@@ -259,7 +410,7 @@ export function parseFile(
 
   if (rows.length === 0) {
     errors.push("No data rows found in the file.");
-    return { farms: [], skipped: [], errors };
+    return { farms: [], skipped: [], errors, detectedFormat: "generic" };
   }
 
   // Filter out completely empty rows
@@ -268,13 +419,29 @@ export function parseFile(
     return vals.some((v) => v !== "" && v !== undefined && v !== null);
   });
 
-  // Detect if this is an Intact Platform export
-  if (isIntactExport(headers)) {
-    return parseIntactFormat(rows, errors);
+  // Detect format: Intact → CCOF → generic
+  const format = detectFormat(headers);
+
+  let result: { farms: Farm[]; skipped: Farm[]; errors: string[] };
+  if (format === "intact") {
+    result = parseIntactFormat(rows, errors);
+  } else if (format === "ccof") {
+    result = parseCCOFFormat(rows, errors);
+  } else {
+    result = parseGenericFormat(rows, headers, errors);
   }
 
-  // Fallback: generic CSV format
-  return parseGenericFormat(rows, headers, errors);
+  // Stamp sourceAgency on all farms if provided
+  if (agency) {
+    for (const farm of result.farms) {
+      farm.sourceAgency = agency;
+    }
+    for (const farm of result.skipped) {
+      farm.sourceAgency = agency;
+    }
+  }
+
+  return { ...result, detectedFormat: format };
 }
 
 // ── Parse Intact Platform format ──
@@ -323,7 +490,7 @@ function parseIntactFormat(
 
 // ── Fallback: generic CSV with flexible column names ──
 const FIELD_MAPPINGS: Record<string, string[]> = {
-  name: ["name", "farm name", "farm_name", "operation", "operation name", "business name"],
+  name: ["name", "farm name", "farm_name", "operation", "operation name", "business name", "client name"],
   street: ["street", "address", "farm address", "street address", "street (add. address)"],
   city: ["city", "city (add. address)"],
   state: ["state", "state (add. address)"],
@@ -333,12 +500,12 @@ const FIELD_MAPPINGS: Record<string, string[]> = {
   email: ["email", "e-mail"],
   phone: ["phone", "telephone", "phone number"],
   services: ["services", "services (original)", "cert type", "certification type"],
-  completionFrom: ["completion from", "start date", "window start"],
-  completionUntil: ["completion until", "end date", "deadline", "window end"],
-  priority: ["priority"],
-  nopId: ["file number", "nop id", "file number (nop id)"],
-  auditType: ["audit type", "audit type (original)", "inspection type"],
-  auditNumber: ["audit no", "audit no.", "audit number"],
+  completionFrom: ["completion from", "start date", "window start", "due after"],
+  completionUntil: ["completion until", "end date", "deadline", "window end", "due by"],
+  priority: ["priority", "insp priority"],
+  nopId: ["file number", "nop id", "file number (nop id)", "client id"],
+  auditType: ["audit type", "audit type (original)", "inspection type", "inspection type (original)"],
+  auditNumber: ["audit no", "audit no.", "audit number", "inspection no", "inspection no."],
 };
 
 function normalizeHeader(header: string): string {
@@ -421,6 +588,7 @@ function parseGenericFormat(
       year: new Date().getFullYear(),
       estimatedDurationHours: estimateDuration(services),
       notes: "",
+      sourceAgency: "",
     };
 
     if (priority === "do_not_inspect") {
@@ -455,4 +623,4 @@ export function generateCSVTemplate(): string {
 }
 
 // Keep backward compat for any old CSV imports
-export const parseCSV = (text: string) => parseFile(text, "data.csv");
+export const parseCSV = (text: string): ParseResult => parseFile(text, "data.csv");

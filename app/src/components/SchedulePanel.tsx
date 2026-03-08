@@ -43,6 +43,7 @@ import {
 } from "@/lib/types";
 import { scheduleToCSV } from "@/lib/scheduler";
 import { generateContactScript } from "@/lib/contact-scripts";
+import { getAgencyColor } from "@/lib/agency-colors";
 import { format, parseISO } from "date-fns";
 
 interface SchedulePanelProps {
@@ -91,6 +92,14 @@ export default function SchedulePanel({
   // Split trips by type
   const dayTrips = schedule.trips.filter((t) => t.tripType === "day_trip");
   const travelTrips = schedule.trips.filter((t) => t.tripType === "multi_day");
+
+  // Determine if multi-agency to show badges
+  const allAgencies = new Set(
+    schedule.trips.flatMap((t) =>
+      t.days.flatMap((d) => d.inspections.map((i) => i.farm.sourceAgency).filter(Boolean))
+    )
+  );
+  const isMultiAgency = allAgencies.size > 1;
 
   return (
     <div>
@@ -179,6 +188,26 @@ export default function SchedulePanel({
         </div>
       )}
 
+      {schedule.forfeited && schedule.forfeited.length > 0 && (
+        <div className="mb-4 bg-red-50 border border-red-200 rounded-[var(--radius-lg)] p-4">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
+            <div>
+              <p className="font-semibold text-red-700 text-sm">
+                {schedule.forfeited.length} deadline(s) cannot be met
+              </p>
+              <ul className="mt-1 text-xs text-red-600 space-y-1">
+                {schedule.forfeited.map((ff) => (
+                  <li key={ff.farm.id}>
+                    <span className="font-medium">{ff.farm.name}</span> — {ff.reason}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
+
       {schedule.unscheduled.length > 0 && (
         <div className="mb-4 bg-amber-50 border border-amber-200 rounded-[var(--radius-lg)] p-4">
           <div className="flex items-start gap-2">
@@ -221,6 +250,7 @@ export default function SchedulePanel({
                     onToggle={() => toggleTrip(trip.id)}
                     onEdit={onEdit}
                     accentColor="blue"
+                    isMultiAgency={isMultiAgency}
                   />
                 ))}
               </div>
@@ -245,6 +275,7 @@ export default function SchedulePanel({
                     onToggle={() => toggleTrip(trip.id)}
                     onEdit={onEdit}
                     accentColor="emerald"
+                    isMultiAgency={isMultiAgency}
                   />
                 ))}
               </div>
@@ -263,6 +294,7 @@ export default function SchedulePanel({
                   onToggle={() => toggleTrip(trip.id)}
                   onEdit={onEdit}
                   accentColor="green"
+                  isMultiAgency={isMultiAgency}
                 />
               ))}
             </div>
@@ -317,6 +349,7 @@ function TripSection({
   onToggle,
   onEdit,
   accentColor,
+  isMultiAgency = false,
 }: {
   trip: Trip;
   prefs: InspectorPreferences;
@@ -324,6 +357,7 @@ function TripSection({
   onToggle: () => void;
   onEdit?: (edit: ScheduleEdit) => void;
   accentColor: string;
+  isMultiAgency?: boolean;
 }) {
   const borderColor = accentColor === "blue" ? "border-blue-200" : accentColor === "emerald" ? "border-emerald-200" : "border-earth-200";
   const hoverBorder = accentColor === "blue" ? "hover:border-blue-300" : accentColor === "emerald" ? "hover:border-emerald-300" : "hover:border-earth-300";
@@ -377,6 +411,7 @@ function TripSection({
               isLastDay={dayIdx === trip.days.length - 1}
               prefs={prefs}
               onEdit={onEdit}
+              isMultiAgency={isMultiAgency}
             />
           ))}
         </div>
@@ -392,12 +427,14 @@ function DaySection({
   isLastDay,
   prefs,
   onEdit,
+  isMultiAgency = false,
 }: {
   day: TripDay;
   dayIndex: number;
   isLastDay: boolean;
   prefs: InspectorPreferences;
   onEdit?: (edit: ScheduleEdit) => void;
+  isMultiAgency?: boolean;
 }) {
   return (
     <div className={dayIndex > 0 ? "border-t border-earth-100" : ""}>
@@ -438,6 +475,7 @@ function DaySection({
             inspection={insp}
             prefs={prefs}
             onEdit={onEdit}
+            isMultiAgency={isMultiAgency}
           />
         ))}
       </div>
@@ -466,10 +504,12 @@ function InspectionRow({
   inspection,
   prefs,
   onEdit,
+  isMultiAgency = false,
 }: {
   inspection: ScheduledInspection;
   prefs: InspectorPreferences;
   onEdit?: (edit: ScheduleEdit) => void;
+  isMultiAgency?: boolean;
 }) {
   const { farm } = inspection;
   const [copiedEmail, setCopiedEmail] = useState(false);
@@ -541,6 +581,11 @@ function InspectionRow({
             <h4 className="font-[family-name:var(--font-display)] font-semibold text-primary-800 text-sm">
               {farm.name}
             </h4>
+            {isMultiAgency && farm.sourceAgency && (
+              <span className={`inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold uppercase rounded border ${getAgencyColor(farm.sourceAgency)}`}>
+                {farm.sourceAgency}
+              </span>
+            )}
             {farm.priority === "urgent" && (
               <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-red-600 bg-red-50 px-1.5 py-0.5 rounded-full ring-1 ring-red-100">
                 <Zap className="w-2.5 h-2.5" />

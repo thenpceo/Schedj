@@ -30,6 +30,7 @@ import {
 import { Schedule, Trip, TripDay, ScheduledInspection, InspectorPreferences } from "@/lib/types";
 import { scheduleToCSV } from "@/lib/scheduler";
 import { generateContactScript } from "@/lib/contact-scripts";
+import { getAgencyColor } from "@/lib/agency-colors";
 import { format, parseISO } from "date-fns";
 
 interface ScheduleViewProps {
@@ -66,6 +67,17 @@ export default function ScheduleView({ schedule, prefs }: ScheduleViewProps) {
     schedule.trips.reduce((s, t) => s + t.totalMiles, 0)
   );
   const totalDays = schedule.trips.reduce((s, t) => s + t.days.length, 0);
+
+  // Check if farms come from multiple agencies
+  const allAgencies = new Set<string>();
+  for (const trip of schedule.trips) {
+    for (const day of trip.days) {
+      for (const insp of day.inspections) {
+        if (insp.farm.sourceAgency) allAgencies.add(insp.farm.sourceAgency);
+      }
+    }
+  }
+  const isMultiAgency = allAgencies.size >= 2;
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -153,6 +165,28 @@ export default function ScheduleView({ schedule, prefs }: ScheduleViewProps) {
         </div>
       )}
 
+      {/* ── Forfeited Deadlines Warning ── */}
+      {schedule.forfeited && schedule.forfeited.length > 0 && (
+        <div className="mb-6 bg-red-50 border border-red-200 rounded-[var(--radius-xl)] p-4 sm:p-5 animate-fade-in-up">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-red-500 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="font-semibold text-red-700 text-sm">
+                {schedule.forfeited.length} deadline(s) cannot be met
+              </p>
+              <ul className="mt-1.5 text-sm text-red-600 space-y-1">
+                {schedule.forfeited.map((ff) => (
+                  <li key={ff.farm.id}>
+                    <span className="font-medium">{ff.farm.name}</span>
+                    {" — "}{ff.reason}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Unscheduled Warning ── */}
       {schedule.unscheduled.length > 0 && (
         <div className="mb-6 bg-gold-50 border border-gold-200 rounded-[var(--radius-xl)] p-4 sm:p-5 animate-fade-in-up">
@@ -185,6 +219,7 @@ export default function ScheduleView({ schedule, prefs }: ScheduleViewProps) {
             prefs={prefs}
             expanded={expandedTrips.has(trip.id)}
             onToggle={() => toggleTrip(trip.id)}
+            isMultiAgency={isMultiAgency}
           />
         ))}
       </div>
@@ -241,11 +276,13 @@ function TripSection({
   prefs,
   expanded,
   onToggle,
+  isMultiAgency,
 }: {
   trip: Trip;
   prefs: InspectorPreferences;
   expanded: boolean;
   onToggle: () => void;
+  isMultiAgency: boolean;
 }) {
   return (
     <div className="bg-white border border-earth-200 rounded-[var(--radius-xl)] overflow-hidden shadow-sm">
@@ -301,6 +338,7 @@ function TripSection({
               dayIndex={dayIdx}
               isLastDay={dayIdx === trip.days.length - 1}
               prefs={prefs}
+              isMultiAgency={isMultiAgency}
             />
           ))}
         </div>
@@ -315,11 +353,13 @@ function DaySection({
   dayIndex,
   isLastDay,
   prefs,
+  isMultiAgency,
 }: {
   day: TripDay;
   dayIndex: number;
   isLastDay: boolean;
   prefs: InspectorPreferences;
+  isMultiAgency: boolean;
 }) {
   return (
     <div className={dayIndex > 0 ? "border-t border-earth-100" : ""}>
@@ -356,7 +396,7 @@ function DaySection({
 
       <div className="divide-y divide-earth-100/60">
         {day.inspections.map((insp, idx) => (
-          <InspectionRow key={insp.farm.id} inspection={insp} index={idx} prefs={prefs} />
+          <InspectionRow key={insp.farm.id} inspection={insp} index={idx} prefs={prefs} isMultiAgency={isMultiAgency} />
         ))}
       </div>
 
@@ -384,10 +424,12 @@ function formatMinutes(minutes: number): string {
 function InspectionRow({
   inspection,
   prefs,
+  isMultiAgency,
 }: {
   inspection: ScheduledInspection;
   index: number;
   prefs: InspectorPreferences;
+  isMultiAgency: boolean;
 }) {
   const { farm } = inspection;
   const [copiedEmail, setCopiedEmail] = useState(false);
@@ -447,6 +489,11 @@ function InspectionRow({
             <h4 className="font-[family-name:var(--font-display)] font-semibold text-primary-800 text-base">
               {farm.name}
             </h4>
+            {isMultiAgency && farm.sourceAgency && (
+              <span className={`inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold uppercase rounded border ${getAgencyColor(farm.sourceAgency)}`}>
+                {farm.sourceAgency}
+              </span>
+            )}
             {farm.priority === "urgent" && (
               <span className="inline-flex items-center gap-1 text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full ring-1 ring-red-100">
                 <Zap className="w-3 h-3" />

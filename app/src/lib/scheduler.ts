@@ -1,5 +1,6 @@
 import {
   Farm,
+  ForfeitedFarm,
   InspectorPreferences,
   Schedule,
   Trip,
@@ -10,6 +11,7 @@ import {
   IRS_MILEAGE_RATE,
   HOTEL_NIGHTLY_RATE,
   LUNCH_BREAK_MINUTES,
+  UNIVERSAL_CERTIFICATIONS,
 } from "./types";
 import {
   haversineDistance,
@@ -21,6 +23,174 @@ import { generateContactScript } from "./contact-scripts";
 import { addDays, format, parseISO, getDay, differenceInCalendarDays } from "date-fns";
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// ── Deadline-first pass: schedule farms with imminent deadlines ──
+const DEADLINE_URGENT_DAYS = 30; // farms due within this many days from start get Pass 0
+const RESCUE_GROUP_RADIUS_MILES = 50; // pull nearby farms into deadline trips
+
+function deadlineFirstPass(
+  farms: Farm[],
+  prefs: InspectorPreferences,
+  startDate: Date,
+  farmUnavailableDates?: Record<string, string[]>
+): { trips: Trip[]; scheduledIds: Set<string>; blockedDates: Set<string>; forfeited: ForfeitedFarm[] } {
+  const trips: Trip[] = [];
+  const scheduledIds = new Set<string>();
+  const blockedDates = new Set<string>();
+  const forfeited: ForfeitedFarm[] = [];
+
+  // Find farms with deadlines within DEADLINE_URGENT_DAYS of start
+  const deadlineFarms = farms
+    .filter((f) => {
+      if (!f.completionUntil) return false;
+      const deadline = parseISO(f.completionUntil);
+      const daysUntil = differenceInCalendarDays(deadline, startDate);
+      return daysUntil <= DEADLINE_URGENT_DAYS && daysUntil >= 0;
+    })
+    .sort((a, b) => {
+      // Earliest deadline first
+      return a.completionUntil.localeCompare(b.completionUntil);
+    });
+
+  if (deadlineFarms.length === 0) {
+    // Check for past-deadline farms
+    for (const f of farms) {
+      if (!f.completionUntil) continue;
+      const deadline = parseISO(f.completionUntil);
+      if (deadline < startDate) {
+        forfeited.push({
+          farm: f,
+          reason: `Deadline ${f.completionUntil} has already passed (schedule starts ${format(startDate, "yyyy-MM-dd")})`,
+        });
+      }
+    }
+    return { trips, scheduledIds, blockedDates, forfeited };
+  }
+
+  for (const deadlineFarm of deadlineFarms) {
+    if (scheduledIds.has(deadlineFarm.id)) continue;
+
+    const deadline = parseISO(deadlineFarm.completionUntil);
+
+    // Check if deadline is achievable
+    const firstAvailableDate = skipToAvailableDay(new Date(startDate), prefs);
+    if (firstAvailableDate > deadline) {
+      forfeited.push({
+        farm: deadlineFarm,
+        reason: `Deadline ${deadlineFarm.completionUntil} cannot be met — first available work day is ${format(firstAvailableDate, "yyyy-MM-dd")}`,
+      });
+      continue;
+    }
+
+    // Rescue grouping: find nearby unscheduled farms with overlapping windows
+    const rescueFarms: Farm[] = [deadlineFarm];
+    for (const other of farms) {
+      if (other.id === deadlineFarm.id) continue;
+      if (scheduledIds.has(other.id)) continue;
+
+      // Check proximity
+      const dist = haversineDistance(
+        deadlineFarm.lat, deadlineFarm.lng,
+        other.lat, other.lng
+      );
+      if (dist > RESCUE_GROUP_RADIUS_MILES) continue;
+
+      // Check overlapping windows: other farm's window must include before the deadline
+      if (other.completionFrom) {
+        const otherStart = parseISO(other.completionFrom);
+        if (otherStart > deadline) continue; // window opens after deadline
+      }
+
+      rescueFarms.push(other);
+    }
+
+    // Schedule this rescue group
+    const ordered = optimizeRoute(rescueFarms, prefs);
+
+    // Find an available date before the deadline
+    let tripDate = skipToAvailableDay(new Date(startDate), prefs);
+    let safety = 0;
+    while (blockedDates.has(format(tripDate, "yyyy-MM-dd")) && safety < 365) {
+      tripDate = addDays(tripDate, 1);
+      tripDate = skipToAvailableDay(tripDate, prefs);
+      safety++;
+    }
+
+    if (tripDate > deadline) {
+      forfeited.push({
+        farm: deadlineFarm,
+        reason: `Deadline ${deadlineFarm.completionUntil} cannot be met — no available days before deadline`,
+      });
+      continue;
+    }
+
+    const tripDays = packIntoDays(ordered, prefs, tripDate, farmUnavailableDates);
+    if (tripDays.length === 0) continue;
+
+    // Verify the scheduled date is before deadline
+    const lastScheduledDate = parseISO(tripDays[tripDays.length - 1].date);
+    if (lastScheduledDate > deadline) {
+      // Only keep days that are before the deadline
+      const validDays = tripDays.filter((d) => parseISO(d.date) <= deadline);
+      if (validDays.length === 0) {
+        forfeited.push({
+          farm: deadlineFarm,
+          reason: `Deadline ${deadlineFarm.completionUntil} cannot be met within trip constraints`,
+        });
+        continue;
+      }
+      tripDays.splice(validDays.length);
+    }
+
+    const scheduledInTrip = new Set<string>();
+    for (const day of tripDays) {
+      blockedDates.add(day.date);
+      for (const insp of day.inspections) {
+        scheduledIds.add(insp.farm.id);
+        scheduledInTrip.add(insp.farm.id);
+      }
+    }
+
+    // Check if the deadline farm itself was actually scheduled
+    if (!scheduledInTrip.has(deadlineFarm.id)) {
+      forfeited.push({
+        farm: deadlineFarm,
+        reason: `Deadline ${deadlineFarm.completionUntil} farm could not fit in available time slots`,
+      });
+      continue;
+    }
+
+    const allNearHome = rescueFarms
+      .filter((f) => scheduledInTrip.has(f.id))
+      .every(
+        (f) => driveTimeBetween(prefs.homeLat, prefs.homeLng, f.lat, f.lng) <=
+          (prefs.dayTripThresholdMinutes || 180)
+      );
+    const tripType: TripType = allNearHome ? "day_trip" : "multi_day";
+
+    const trip = buildTrip(
+      trips.length, tripDays,
+      rescueFarms.filter((f) => scheduledInTrip.has(f.id)),
+      prefs, tripType
+    );
+    trips.push(trip);
+  }
+
+  // Also check past-deadline farms that weren't caught above
+  for (const f of farms) {
+    if (scheduledIds.has(f.id)) continue;
+    if (!f.completionUntil) continue;
+    const deadline = parseISO(f.completionUntil);
+    if (deadline < startDate) {
+      forfeited.push({
+        farm: f,
+        reason: `Deadline ${f.completionUntil} has already passed (schedule starts ${format(startDate, "yyyy-MM-dd")})`,
+      });
+    }
+  }
+
+  return { trips, scheduledIds, blockedDates, forfeited };
+}
 
 // ── Main entry point ──
 export function generateSchedule(
@@ -36,8 +206,11 @@ export function generateSchedule(
   // Stage 0: Certification check
   const certificationWarnings = checkCertifications(farms, prefs);
 
-  // Stage 1: Score farms by urgency & date proximity
+  // Stage 0b: Infer urgency for farms with tight deadlines (CCOF never marks urgent)
   const startDate = parseISO(prefs.startDate);
+  inferUrgency(farms, startDate);
+
+  // Stage 1: Score farms by urgency & date proximity
   const scored = farms.map((f) => ({
     farm: f,
     score: scoreFarm(f, startDate),
@@ -75,9 +248,12 @@ function generateTwoPhaseSchedule(
   startDate: Date,
   farmUnavailableDates?: Record<string, string[]>
 ): Schedule {
-  const trips: Trip[] = [];
-  const scheduled = new Set<string>();
-  const blockedDates = new Set<string>(); // dates consumed by multi-day trips
+  // Pass 0: Deadline-first scheduling
+  const pass0 = deadlineFirstPass(selectedFarms, prefs, startDate, farmUnavailableDates);
+
+  const trips: Trip[] = [...pass0.trips];
+  const scheduled = new Set<string>(pass0.scheduledIds);
+  const blockedDates = new Set<string>(pass0.blockedDates);
 
   // Phase 1: Schedule multi-day trips (user-planned)
   const multiDayPlans = tripPlans
@@ -149,7 +325,7 @@ function generateTwoPhaseSchedule(
   trips.sort((a, b) => a.startDate.localeCompare(b.startDate));
   trips.forEach((t, i) => { t.tripNumber = i + 1; t.id = `trip-${i + 1}`; });
 
-  return buildScheduleResult(trips, selectedFarms, deferredFarms, scheduled, certificationWarnings);
+  return buildScheduleResult(trips, selectedFarms, deferredFarms, scheduled, certificationWarnings, pass0.forfeited);
 }
 
 // Schedule day trips: cluster nearby farms, 1-day trips
@@ -237,18 +413,32 @@ function generateSinglePhaseSchedule(
   startDate: Date,
   farmUnavailableDates?: Record<string, string[]>
 ): Schedule {
-  // Stage 2: Geographic clustering (only selected farms)
+  // Pass 0: Deadline-first scheduling
+  const pass0 = deadlineFirstPass(selectedFarms, prefs, startDate, farmUnavailableDates);
+  const preScheduled = pass0.scheduledIds;
+  const preBlockedDates = pass0.blockedDates;
+
+  // Filter out farms already handled by Pass 0
+  const remainingSelected = selectedFarms.filter((f) => !preScheduled.has(f.id));
+
+  if (remainingSelected.length === 0) {
+    // Re-number pass0 trips
+    pass0.trips.forEach((t, i) => { t.tripNumber = i + 1; t.id = `trip-${i + 1}`; });
+    return buildScheduleResult(pass0.trips, selectedFarms, deferredFarms, preScheduled, certificationWarnings, pass0.forfeited);
+  }
+
+  // Stage 2: Geographic clustering (only remaining selected farms)
   const avgDuration =
-    selectedFarms.reduce((s, f) => s + f.estimatedDurationHours, 0) / selectedFarms.length;
+    remainingSelected.reduce((s, f) => s + f.estimatedDurationHours, 0) / remainingSelected.length;
   const workHours = prefs.workEndHour - prefs.workStartHour;
   const farmsPerDay = Math.min(
     prefs.maxDailyInspections,
     Math.max(1, Math.floor(workHours / avgDuration))
   );
   const farmsPerTrip = farmsPerDay * prefs.preferredTripLengthDays;
-  const k = Math.max(1, Math.ceil(selectedFarms.length / Math.max(1, farmsPerTrip)));
+  const k = Math.max(1, Math.ceil(remainingSelected.length / Math.max(1, farmsPerTrip)));
 
-  const clusters = kMeansCluster(selectedFarms, k);
+  const clusters = kMeansCluster(remainingSelected, k);
 
   // Sort clusters: most urgent first (highest max score in cluster)
   const scoredClusters = clusters.map((cluster) => {
@@ -271,16 +461,16 @@ function generateSinglePhaseSchedule(
   }
 
   // Stage 3 & 4: Optimize routes and pack into days
-  const trips: Trip[] = [];
-  const scheduled = new Set<string>();
+  const trips: Trip[] = [...pass0.trips];
+  const scheduled = new Set<string>(preScheduled);
   let currentDate = new Date(startDate);
 
   for (const cluster of scoredClusters) {
-    let remainingFarms = cluster.farms.filter((f) => !scheduled.has(f.id));
-    if (remainingFarms.length === 0) continue;
+    let clusterRemainingFarms = cluster.farms.filter((f) => !scheduled.has(f.id));
+    if (clusterRemainingFarms.length === 0) continue;
 
-    while (remainingFarms.length > 0) {
-      const earliestWindow = remainingFarms
+    while (clusterRemainingFarms.length > 0) {
+      const earliestWindow = clusterRemainingFarms
         .filter((f) => f.completionFrom)
         .map((f) => parseISO(f.completionFrom))
         .sort((a, b) => a.getTime() - b.getTime())[0];
@@ -289,7 +479,16 @@ function generateSinglePhaseSchedule(
         currentDate = new Date(earliestWindow);
       }
 
-      const ordered = optimizeRoute(remainingFarms, prefs);
+      // Skip dates blocked by Pass 0
+      currentDate = skipToAvailableDay(currentDate, prefs);
+      let safety = 0;
+      while (preBlockedDates.has(format(currentDate, "yyyy-MM-dd")) && safety < 365) {
+        currentDate = addDays(currentDate, 1);
+        currentDate = skipToAvailableDay(currentDate, prefs);
+        safety++;
+      }
+
+      const ordered = optimizeRoute(clusterRemainingFarms, prefs);
       const tripDays = packIntoDays(ordered, prefs, currentDate, farmUnavailableDates);
       if (tripDays.length === 0) break;
 
@@ -302,7 +501,7 @@ function generateSinglePhaseSchedule(
       }
 
       // Determine trip type based on distance from home
-      const tripFarms = remainingFarms.filter((f) => scheduledInTrip.has(f.id));
+      const tripFarms = clusterRemainingFarms.filter((f) => scheduledInTrip.has(f.id));
       const allNearHome = tripFarms.every(
         (f) => driveTimeBetween(prefs.homeLat, prefs.homeLng, f.lat, f.lng) <=
           (prefs.dayTripThresholdMinutes || 180)
@@ -314,11 +513,15 @@ function generateSinglePhaseSchedule(
 
       const lastTripDate = parseISO(tripDays[tripDays.length - 1].date);
       currentDate = addDays(lastTripDate, prefs.restDaysBetweenTrips + 1);
-      remainingFarms = remainingFarms.filter((f) => !scheduledInTrip.has(f.id));
+      clusterRemainingFarms = clusterRemainingFarms.filter((f) => !scheduledInTrip.has(f.id));
     }
   }
 
-  return buildScheduleResult(trips, selectedFarms, deferredFarms, scheduled, certificationWarnings);
+  // Re-number trips by start date
+  trips.sort((a, b) => a.startDate.localeCompare(b.startDate));
+  trips.forEach((t, i) => { t.tripNumber = i + 1; t.id = `trip-${i + 1}`; });
+
+  return buildScheduleResult(trips, selectedFarms, deferredFarms, scheduled, certificationWarnings, pass0.forfeited);
 }
 
 // ── Shared helpers for building trip and schedule objects ──
@@ -364,9 +567,13 @@ function buildScheduleResult(
   selectedFarms: Farm[],
   deferredFarms: Farm[],
   scheduled: Set<string>,
-  certificationWarnings: string[]
+  certificationWarnings: string[],
+  forfeited: ForfeitedFarm[] = []
 ): Schedule {
-  const unscheduledFromSelected = selectedFarms.filter((f) => !scheduled.has(f.id));
+  const forfeitedIds = new Set(forfeited.map((f) => f.farm.id));
+  const unscheduledFromSelected = selectedFarms.filter(
+    (f) => !scheduled.has(f.id) && !forfeitedIds.has(f.id)
+  );
   const unscheduled = [...unscheduledFromSelected, ...deferredFarms];
   const allDates = trips.flatMap((t) => t.days.map((d) => d.date));
   const totalEstimatedCost = trips.reduce((s, t) => s + t.estimatedTravelCost, 0);
@@ -375,6 +582,7 @@ function buildScheduleResult(
     trips,
     unscheduled,
     skipped: [],
+    forfeited,
     totalFarms: scheduled.size,
     totalTrips: trips.length,
     dateRange: {
@@ -393,10 +601,16 @@ function checkCertifications(
 ): string[] {
   const warnings: string[] = [];
   const certs = new Set(prefs.certifications.map((c) => c.toLowerCase()));
+  const universalCerts = new Set(UNIVERSAL_CERTIFICATIONS);
 
   for (const farm of farms) {
     const uncovered = farm.services.filter(
-      (s) => !certs.has(s.toLowerCase())
+      (s) => {
+        const lower = s.toLowerCase();
+        // Skip universal certs — every inspector has these
+        if (universalCerts.has(lower)) return false;
+        return !certs.has(lower);
+      }
     );
     if (uncovered.length > 0) {
       warnings.push(
@@ -405,6 +619,22 @@ function checkCertifications(
     }
   }
   return warnings;
+}
+
+// ── CCOF urgency inference: auto-upgrade farms with tight deadlines ──
+const URGENCY_INFERENCE_DAYS = 45; // if deadline within this many days, auto-upgrade to urgent
+
+export function inferUrgency(farms: Farm[], referenceDate: Date): void {
+  for (const farm of farms) {
+    if (farm.priority !== "normal") continue;
+    if (!farm.completionUntil) continue;
+
+    const deadline = parseISO(farm.completionUntil);
+    const daysUntil = differenceInCalendarDays(deadline, referenceDate);
+    if (daysUntil <= URGENCY_INFERENCE_DAYS) {
+      farm.priority = "urgent";
+    }
+  }
 }
 
 // ── Stage 1: Score farm urgency ──
@@ -839,6 +1069,7 @@ function emptySchedule(): Schedule {
     trips: [],
     unscheduled: [],
     skipped: [],
+    forfeited: [],
     totalFarms: 0,
     totalTrips: 0,
     dateRange: { start: "", end: "" },

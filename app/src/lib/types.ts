@@ -15,6 +15,12 @@ export const AVAILABLE_CERTIFICATIONS = [
   "COR/USCOEA",
 ];
 
+// Certifications that every inspector holds — skip in cert-check
+export const UNIVERSAL_CERTIFICATIONS = [
+  "general checklist questions",
+  "nop general checklist questions",
+];
+
 export interface Farm {
   id: string;
   name: string;
@@ -49,6 +55,8 @@ export interface Farm {
   // Scheduling
   estimatedDurationHours: number;
   notes: string;
+  // Multi-agency support
+  sourceAgency: string;
 }
 
 // ── Separate preferences for day trips vs. travel trips ──
@@ -142,10 +150,16 @@ export interface Trip {
   clusterId?: string; // links back to FarmCluster
 }
 
+export interface ForfeitedFarm {
+  farm: Farm;
+  reason: string;
+}
+
 export interface Schedule {
   trips: Trip[];
   unscheduled: Farm[]; // farms that couldn't be fit
   skipped: Farm[]; // farms marked DO NOT INSPECT
+  forfeited: ForfeitedFarm[]; // farms whose deadlines cannot be met
   totalFarms: number;
   totalTrips: number;
   dateRange: { start: string; end: string };

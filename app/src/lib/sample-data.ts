@@ -31,6 +31,7 @@ export const SAMPLE_FARMS: Farm[] = [
     year: 2026,
     estimatedDurationHours: 4.5,
     notes: "",
+    sourceAgency: "",
   },
   {
     id: "farm-2",
@@ -61,6 +62,7 @@ export const SAMPLE_FARMS: Farm[] = [
     year: 2026,
     estimatedDurationHours: 3,
     notes: "",
+    sourceAgency: "",
   },
   {
     id: "farm-3",
@@ -91,6 +93,7 @@ export const SAMPLE_FARMS: Farm[] = [
     year: 2026,
     estimatedDurationHours: 3,
     notes: "",
+    sourceAgency: "",
   },
   {
     id: "farm-4",
@@ -121,6 +124,7 @@ export const SAMPLE_FARMS: Farm[] = [
     year: 2026,
     estimatedDurationHours: 3,
     notes: "Sites: The Pennsylvania State University ROSE Site",
+    sourceAgency: "",
   },
   {
     id: "farm-5",
@@ -151,6 +155,7 @@ export const SAMPLE_FARMS: Farm[] = [
     year: 2026,
     estimatedDurationHours: 3,
     notes: "",
+    sourceAgency: "",
   },
   {
     id: "farm-6",
@@ -181,6 +186,7 @@ export const SAMPLE_FARMS: Farm[] = [
     year: 2026,
     estimatedDurationHours: 4.5,
     notes: "",
+    sourceAgency: "",
   },
   {
     id: "farm-7",
@@ -211,6 +217,7 @@ export const SAMPLE_FARMS: Farm[] = [
     year: 2026,
     estimatedDurationHours: 4.5,
     notes: "",
+    sourceAgency: "",
   },
   {
     id: "farm-8",
@@ -241,6 +248,7 @@ export const SAMPLE_FARMS: Farm[] = [
     year: 2026,
     estimatedDurationHours: 3,
     notes: "",
+    sourceAgency: "",
   },
   {
     id: "farm-9",
@@ -271,6 +279,7 @@ export const SAMPLE_FARMS: Farm[] = [
     year: 2026,
     estimatedDurationHours: 3,
     notes: "",
+    sourceAgency: "",
   },
   {
     id: "farm-10",
@@ -301,6 +310,7 @@ export const SAMPLE_FARMS: Farm[] = [
     year: 2026,
     estimatedDurationHours: 4.5,
     notes: "Sites: Crawford Organics LLC: Packing Shed",
+    sourceAgency: "",
   },
   {
     id: "farm-11",
@@ -331,6 +341,7 @@ export const SAMPLE_FARMS: Farm[] = [
     year: 2026,
     estimatedDurationHours: 3,
     notes: "",
+    sourceAgency: "",
   },
   {
     id: "farm-12",
@@ -361,6 +372,7 @@ export const SAMPLE_FARMS: Farm[] = [
     year: 2026,
     estimatedDurationHours: 3,
     notes: "",
+    sourceAgency: "",
   },
 ];
 
