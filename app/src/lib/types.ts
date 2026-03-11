@@ -173,7 +173,10 @@ export interface ContactScript {
   callScript: string;
 }
 
-export type AppStep = "upload" | "analyze" | "plan";
+// ── App steps (V2 + V3) ──
+// V2 steps kept for backward compat until Phase 3 replaces page.tsx
+export type AppStep = "upload" | "analyze" | "plan" | "preferences" | "workspace" | "contact";
+export type WorkspaceTab = "trips" | "calendar" | "map";
 
 // ── v2: Region analysis types ──
 export interface FarmCluster {
@@ -211,9 +214,131 @@ export interface TripPlan {
 
 // ── v2: Schedule editing types ──
 export interface ScheduleEdit {
-  type: "move_inspection" | "change_date" | "mark_unavailable" | "remove_inspection";
+  type: "move_inspection" | "change_date" | "mark_unavailable" | "remove_inspection"
+    | "split_trip" | "merge_trips" | "move_farms" | "reorder_farms";
   inspectionFarmId: string;
   fromDate?: string;
   toDate?: string;
   unavailableDates?: string[];
+  // V3 extensions
+  fromTripId?: string;
+  toTripId?: string;
+  farmIds?: string[];
+  splitAfterDay?: number;
+}
+
+// ── V3: Hotel suggestion ──
+export interface HotelSuggestion {
+  zip: string;
+  city: string;
+  state: string;
+  lat: number;
+  lng: number;
+}
+
+// ── V3: Window violation (soft warning) ──
+export interface WindowViolation {
+  farmId: string;
+  farmName: string;
+  reason: string;           // e.g., "Trip starts before inspection window opens"
+  completionFrom?: string;  // ISO date
+  completionUntil?: string; // ISO date
+  tripStartDate?: string;
+  tripEndDate?: string;
+}
+
+// ── V3: Trip with V3 extensions ──
+export interface TripV3 extends Trip {
+  hotelSuggestion?: HotelSuggestion;
+  windowViolations: WindowViolation[];
+  isUserEdited: boolean;    // true if user has manually modified this trip
+}
+
+// ── V3: Returned farm (denied by inspector) ──
+export interface ReturnedFarm {
+  farm: Farm;
+  reason: string;
+  returnedAt: string; // ISO timestamp
+}
+
+// ── V3: Trip state for undo/redo ──
+export interface TripState {
+  trips: TripV3[];
+  needsLocationFarms: Farm[];
+  returnedFarms: ReturnedFarm[];
+  timestamp: number;
+}
+
+// ── V3: Undo/redo history (immutable state stack) ──
+export interface TripEditHistory {
+  past: TripState[];     // max 50
+  present: TripState;
+  future: TripState[];   // redo stack
+}
+
+// ── V3: Schedule score summary ──
+export interface ScheduleScore {
+  coveragePercent: number;      // scheduled / total inspectable
+  totalEstimatedCost: number;
+  avgDriveTimeMinutes: number;
+  totalTrips: number;
+  totalDayTrips: number;
+  totalTravelTrips: number;
+  windowViolationCount: number;
+}
+
+// ── V3: Travel prefs (frozen after schedule generation) ──
+export interface TravelPrefs {
+  maxDaysAway: number;
+  maxDrivingDistanceMiles: number;  // beyond this = fly
+  inspectionsPerDay: number;
+  maxLocalDrivingRadiusMiles: number;
+  workStartHour: number;
+  workEndHour: number;
+  availableDays: string[];
+}
+
+// ── V3: Day trip prefs (mutable in workspace sidebar) ──
+export interface DayTripPrefsV3 {
+  availableDays: string[];
+  maxInspectionsPerDay: number;
+  maxOneWayMiles: number;
+}
+
+// ── V3: Workspace action types ──
+export type WorkspaceAction =
+  | { type: "MOVE_FARMS"; farmIds: string[]; toTripId: string }
+  | { type: "SPLIT_TRIP"; tripId: string; afterDay: number }
+  | { type: "MERGE_TRIPS"; tripIdA: string; tripIdB: string }
+  | { type: "REORDER_FARMS"; tripId: string; farmIds: string[] }
+  | { type: "RETURN_FARMS"; farmIds: string[]; reason: string }
+  | { type: "RESTORE_FARM"; farmId: string }
+  | { type: "NEW_TRIP_FROM_FARMS"; farmIds: string[] }
+  | { type: "UPDATE_DAY_TRIP_PREFS"; prefs: DayTripPrefsV3 }
+  | { type: "SET_SELECTED_FARMS"; farmIds: Set<string> }
+  | { type: "TOGGLE_FARM_SELECTION"; farmId: string }
+  | { type: "CLEAR_SELECTION" }
+  | { type: "SET_ACTIVE_TAB"; tab: WorkspaceTab }
+  | { type: "SET_EXPANDED_TRIP"; tripId: string | null }
+  | { type: "SET_HOVERED_FARM"; farmId: string | null }
+  | { type: "UNDO" }
+  | { type: "REDO" }
+  | { type: "SET_TRIPS"; trips: TripV3[] }
+  | { type: "UPDATE_FARM_LOCATION"; farmId: string; lat: number; lng: number; address: string };
+
+// ── V3: Workspace context state ──
+export interface WorkspaceState {
+  trips: TripV3[];
+  farms: Farm[];
+  selectedFarmIds: Set<string>;
+  expandedTripId: string | null;
+  hoveredFarmId: string | null;
+  activeTab: WorkspaceTab;
+  tripHistory: TripEditHistory;
+  needsLocationFarms: Farm[];
+  returnedFarms: ReturnedFarm[];
+  scheduleScore: ScheduleScore;
+  travelPrefs: TravelPrefs;
+  travelPrefsLockedAt: Date | null;
+  dayTripPrefs: DayTripPrefsV3;
 }

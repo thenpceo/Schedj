@@ -93,8 +93,32 @@ function parsePriority(raw: string): Priority {
 
 // ── Service name normalization map ──
 const SERVICE_NORMALIZATION: Record<string, string> = {
+  // NOP Crop aliases
   "nop grower": "NOP Crop",
   "nop crop grower": "NOP Crop",
+  "nop crop": "NOP Crop",
+  "crop": "NOP Crop",
+  "grower": "NOP Crop",
+  // NOP Handling aliases
+  "nop handler": "NOP Handling",
+  "nop handling": "NOP Handling",
+  "handling": "NOP Handling",
+  "handler": "NOP Handling",
+  // NOP Livestock aliases
+  "nop livestock": "NOP Livestock",
+  "livestock": "NOP Livestock",
+  // NOP Wild Crop aliases
+  "nop wild crop": "NOP Wild Crop",
+  "wild crop": "NOP Wild Crop",
+  "nop wild crop harvester": "NOP Wild Crop",
+  // US/Canada Equivalence aliases
+  "us/canada equivalence": "US/Canada Equivalence",
+  "us canada equivalence": "US/Canada Equivalence",
+  "usda/canada": "US/Canada Equivalence",
+  // COR/USCOEA aliases
+  "cor/uscoea": "COR/USCOEA",
+  "cor": "COR/USCOEA",
+  "uscoea": "COR/USCOEA",
 };
 
 // ── Normalize a single service name ──
@@ -298,6 +322,7 @@ function parseCCOFFormat(
   for (let i = 0; i < rows.length; i++) {
     const farm = parseCCOFRow(rows[i], i);
     if (!farm.name || farm.name === `Operation ${i + 1}`) {
+      errors.push(`Skipped row ${i + 2}: no farm name found`);
       continue;
     }
     if (farm.priority === "do_not_inspect") {
@@ -441,6 +466,13 @@ export function parseFile(
     }
   }
 
+  // Warn about farms with no inspection window dates
+  for (const farm of result.farms) {
+    if (!farm.completionFrom && !farm.completionUntil) {
+      result.errors.push(`${farm.name}: no inspection window — verify dates in source file`);
+    }
+  }
+
   return { ...result, detectedFormat: format };
 }
 
@@ -455,7 +487,8 @@ function parseIntactFormat(
   for (let i = 0; i < rows.length; i++) {
     const farm = parseIntactRow(rows[i], i);
     if (!farm.name || farm.name === `Operation ${i + 1}`) {
-      continue; // Skip rows without a name
+      errors.push(`Skipped row ${i + 2}: no farm name found`);
+      continue;
     }
     if (farm.priority === "do_not_inspect") {
       skipped.push(farm);

@@ -1,6 +1,6 @@
 const EARTH_RADIUS_MILES = 3959;
-const ROAD_FACTOR = 1.3; // roads are ~30% longer than straight-line
-const AVG_SPEED_MPH = 45; // rural average including some highway
+const ROAD_FACTOR = 1.35; // roads are ~35% longer than straight-line (safety margin)
+const AVG_SPEED_MPH = 40; // rural average including farm roads
 
 export function haversineDistance(
   lat1: number,

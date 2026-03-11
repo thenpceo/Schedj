@@ -24,6 +24,7 @@ import {
   Clock,
   Zap,
   X,
+  AlertTriangle,
 } from "lucide-react";
 import { Schedule, TripDay, ScheduledInspection } from "@/lib/types";
 
@@ -250,12 +251,39 @@ function DayDetail({
 
       {/* Inspections list */}
       <div className="divide-y divide-earth-100/60">
-        {allInspections.map(({ inspection, tripType, tripNumber }) => (
-          <div key={inspection.farm.id} className="px-4 py-3">
+        {allInspections.map(({ inspection, tripType, tripNumber }) => {
+          const farm = inspection.farm;
+          const inspDate = dayData.date;
+          const hasWindowViolation = (() => {
+            if (!farm.completionFrom && !farm.completionUntil) return false;
+            if (farm.completionFrom) {
+              const from = parseISO(farm.completionFrom);
+              if (inspDate < from) return true;
+            }
+            if (farm.completionUntil) {
+              const until = parseISO(farm.completionUntil);
+              if (inspDate > until) return true;
+            }
+            return false;
+          })();
+
+          return (
+          <div key={inspection.farm.id} className={`px-4 py-3 ${hasWindowViolation ? "bg-red-50/60 border-l-2 border-l-red-400" : ""}`}>
+            {hasWindowViolation && (
+              <div className="flex items-center gap-1.5 text-[10px] text-red-600 font-medium mb-1.5">
+                <AlertTriangle className="w-3 h-3" />
+                Outside completion window
+                {farm.completionFrom && farm.completionUntil
+                  ? ` (${farm.completionFrom} – ${farm.completionUntil})`
+                  : farm.completionFrom
+                    ? ` (from ${farm.completionFrom})`
+                    : ` (until ${farm.completionUntil})`}
+              </div>
+            )}
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <h5 className="font-semibold text-primary-800 text-sm">
+                  <h5 className={`font-semibold text-sm ${hasWindowViolation ? "text-red-800" : "text-primary-800"}`}>
                     {inspection.farm.name}
                   </h5>
                   <span
@@ -313,7 +341,8 @@ function DayDetail({
               </span>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

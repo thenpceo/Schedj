@@ -155,7 +155,7 @@ describe("inferUrgency", () => {
   });
 });
 
-// ── checkCertifications (tested via generateSchedule cert warnings) ──
+// ── Certification matching removed (handled at supervisor level) ──
 
 describe("certification warnings", () => {
   it("does NOT warn for universal certifications (General Checklist Questions)", () => {
@@ -167,14 +167,13 @@ describe("certification warnings", () => {
     expect(schedule.certificationWarnings).toHaveLength(0);
   });
 
-  it("warns for genuinely missing certifications", () => {
+  it("returns empty cert warnings (matching removed — handled at supervisor level)", () => {
     const prefs = makePrefs({ certifications: ["NOP Crop"] });
     const farm = makeFarm({
       services: ["NOP Crop", "NOP Livestock"],
     });
     const schedule = generateSchedule([farm], prefs);
-    expect(schedule.certificationWarnings.length).toBeGreaterThan(0);
-    expect(schedule.certificationWarnings[0]).toContain("NOP Livestock");
+    expect(schedule.certificationWarnings).toHaveLength(0);
   });
 
   it("no warnings when inspector covers all services", () => {

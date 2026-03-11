@@ -35,8 +35,8 @@ interface FileUploadProps {
 // ── Agency auto-detection ──
 function detectAgencyFromFilename(fileName: string): string | null {
   const lower = fileName.toLowerCase();
-  if (lower.includes("pco")) return "PCO";
-  if (lower.includes("ccof")) return "CCOF";
+  if (/\bpco\b/.test(lower)) return "PCO";
+  if (/\bccof\b/.test(lower)) return "CCOF";
   return null;
 }
 
@@ -46,6 +46,9 @@ function detectAgencyFromFormat(format: DetectedFormat, headers?: string[]): str
   return null;
 }
 
+function resetAgencyCounter() {
+  agencyCounter = 0;
+}
 let agencyCounter = 0;
 function nextAutoAgency(): string {
   agencyCounter += 1;
@@ -67,19 +70,49 @@ export default function FileUpload({ onFarmsLoaded }: FileUploadProps) {
   );
   const uniqueAgencies = [...new Set(uploadedFiles.map((f) => f.agency))];
 
-  // Merge all farms with prefixed IDs and call parent
+  // Merge all farms with prefixed IDs, deduplicate cross-file, and call parent
   const mergeAndNotify = useCallback(
     (files: UploadedFile[]) => {
       const allFarms: Farm[] = [];
       const allSkipped: Farm[] = [];
+      const dupWarnings: string[] = [];
+
+      // Track seen farms for cross-file deduplication
+      // Key: nopId (primary) or "name|zip" (fallback)
+      const seen = new Map<string, { farm: Farm; agency: string; index: number }>();
 
       for (const uf of files) {
         for (let i = 0; i < uf.farms.length; i++) {
-          allFarms.push({
+          const farm: Farm = {
             ...uf.farms[i],
             id: `${uf.agency}-farm-${i + 1}`,
             sourceAgency: uf.agency,
-          });
+          };
+
+          // Build dedup key: nopId if available, else name+zip
+          const dedupKey = farm.nopId
+            ? `nop:${farm.nopId.trim().toLowerCase()}`
+            : `name:${farm.name.trim().toLowerCase()}|${(farm.zip || "").trim()}`;
+
+          const existing = seen.get(dedupKey);
+          if (existing && existing.agency !== uf.agency) {
+            // Cross-agency duplicate — flag both as multi-agency
+            const existingFarm = allFarms[existing.index];
+            if (existingFarm) {
+              const agencies = new Set([
+                ...(existingFarm.sourceAgency || "").split("+"),
+                uf.agency,
+              ]);
+              existingFarm.sourceAgency = [...agencies].join("+");
+            }
+            dupWarnings.push(
+              `${farm.name} appears in both ${existing.agency} and ${uf.agency} uploads`
+            );
+            // Skip adding the duplicate — the first one now carries both agencies
+          } else {
+            seen.set(dedupKey, { farm, agency: uf.agency, index: allFarms.length });
+            allFarms.push(farm);
+          }
         }
         for (let i = 0; i < uf.skipped.length; i++) {
           allSkipped.push({
@@ -87,6 +120,16 @@ export default function FileUpload({ onFarmsLoaded }: FileUploadProps) {
             id: `${uf.agency}-skipped-${i + 1}`,
             sourceAgency: uf.agency,
           });
+        }
+      }
+
+      // Attach dedup warnings to the last file's errors so they show in UI
+      if (dupWarnings.length > 0 && files.length > 0) {
+        const lastFile = files[files.length - 1];
+        for (const w of dupWarnings) {
+          if (!lastFile.errors.includes(w)) {
+            lastFile.errors.push(w);
+          }
         }
       }
 
@@ -194,11 +237,14 @@ export default function FileUpload({ onFarmsLoaded }: FileUploadProps) {
 
   const handleFiles = useCallback(
     (files: FileList) => {
+      if (uploadedFiles.length === 0) {
+        resetAgencyCounter();
+      }
       for (let i = 0; i < files.length; i++) {
         handleSingleFile(files[i]);
       }
     },
-    [handleSingleFile]
+    [handleSingleFile, uploadedFiles.length]
   );
 
   const onDrop = useCallback(

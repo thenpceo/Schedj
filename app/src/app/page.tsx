@@ -1,34 +1,37 @@
 "use client";
 
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
   Upload,
-  BarChart3,
-  CalendarDays,
+  Settings2,
+  LayoutDashboard,
+  Phone,
   Check,
   ArrowLeft,
   Leaf,
   Sprout,
-  MapPin,
-  Loader2,
 } from "lucide-react";
-import { Farm, InspectorPreferences, AppStep, RegionAnalysis as RegionAnalysisType, TripPlan, ScheduleEdit } from "@/lib/types";
-import { analyzeRegions } from "@/lib/analyzer";
+import {
+  Farm,
+  InspectorPreferences,
+  AppStep,
+  TravelPrefs,
+  ScheduleEdit,
+} from "@/lib/types";
 import { applyEdit } from "@/lib/schedule-editor";
-import { geocodeFarms, countUngeocoded } from "@/lib/geocode";
 import { SAMPLE_PREFERENCES } from "@/lib/sample-data";
 import { useScheduler } from "@/hooks/useScheduler";
-import FileUpload from "@/components/FileUpload";
-import SchedulePanel from "@/components/SchedulePanel";
-import RegionAnalysis from "@/components/RegionAnalysis";
-import TripPlanner from "@/components/TripPlanner";
-import SplitScreenLayout from "@/components/SplitScreenLayout";
-import PreferencesPanel from "@/components/PreferencesPanel";
+import UploadStep from "@/components/steps/UploadStep";
+import PreferencesStep from "@/components/steps/PreferencesStep";
+import WorkspaceStep from "@/components/steps/WorkspaceStep";
+import ContactStep from "@/components/steps/ContactStep";
 
+// V3 step definitions
 const STEPS: { key: AppStep; label: string; shortLabel: string; icon: React.ElementType }[] = [
   { key: "upload", label: "Upload Data", shortLabel: "Upload", icon: Upload },
-  { key: "analyze", label: "Analyze", shortLabel: "Analyze", icon: BarChart3 },
-  { key: "plan", label: "Plan", shortLabel: "Plan", icon: CalendarDays },
+  { key: "preferences", label: "Preferences", shortLabel: "Prefs", icon: Settings2 },
+  { key: "workspace", label: "Workspace", shortLabel: "Work", icon: LayoutDashboard },
+  { key: "contact", label: "Contact", shortLabel: "Contact", icon: Phone },
 ];
 
 const PREFS_STORAGE_KEY = "schedj-prefs";
@@ -41,7 +44,6 @@ function loadPrefsFromStorage(): InspectorPreferences {
     if (!raw) return SAMPLE_PREFERENCES;
     const parsed = JSON.parse(raw);
     if (parsed.version !== PREFS_VERSION) return SAMPLE_PREFERENCES;
-    // Deep merge: use saved values but fall back to defaults for any missing keys
     const { version: _, ...saved } = parsed;
     return { ...SAMPLE_PREFERENCES, ...saved };
   } catch {
@@ -53,7 +55,7 @@ export default function Home() {
   const [step, setStep] = useState<AppStep>("upload");
   const [farms, setFarms] = useState<Farm[]>([]);
   const [prefs, setPrefs] = useState<InspectorPreferences>(loadPrefsFromStorage);
-  const [tripPlans, setTripPlans] = useState<TripPlan[]>([]);
+  const [travelPrefs, setTravelPrefs] = useState<TravelPrefs | null>(null);
   const [farmUnavailableDates, setFarmUnavailableDates] = useState<Record<string, string[]>>({});
 
   // Persist preferences to localStorage
@@ -64,86 +66,93 @@ export default function Home() {
         JSON.stringify({ version: PREFS_VERSION, ...prefs })
       );
     } catch {
-      // Silently fail (private browsing, quota exceeded)
+      // Silently fail
     }
   }, [prefs]);
 
-  // Geocoding state
-  const [isGeocoding, setIsGeocoding] = useState(false);
-  const [geocodeProgress, setGeocodeProgress] = useState({ completed: 0, total: 0 });
-  const [geocodeError, setGeocodeError] = useState<string | null>(null);
-
   const stepIndex = STEPS.findIndex((s) => s.key === step);
 
-  // Compute region analysis when we have farms
-  const regionAnalysis: RegionAnalysisType | null = useMemo(() => {
-    if (farms.length === 0) return null;
-    const inspectable = farms.filter((f) => f.priority !== "do_not_inspect");
-    if (inspectable.length === 0) return null;
-    return analyzeRegions(inspectable, prefs);
-  }, [farms, prefs]);
+  // ── Step handlers ──
 
   const handleFarmsLoaded = useCallback((loadedFarms: Farm[], _skipped: Farm[]) => {
     setFarms(loadedFarms);
-    setGeocodeError(null);
   }, []);
 
-  const handleContinueToAnalyze = useCallback(async () => {
-    const needsGeo = farms.filter((f) => f.lat === 0 && f.lng === 0).length;
+  const handleUploadComplete = useCallback((geocodedFarms: Farm[]) => {
+    setFarms(geocodedFarms);
+    setStep("preferences");
+  }, []);
 
-    if (needsGeo > 0) {
-      setIsGeocoding(true);
-      setGeocodeProgress({ completed: 0, total: 0 });
-      setGeocodeError(null);
+  const handleGenerateSchedule = useCallback((tp: TravelPrefs) => {
+    setTravelPrefs(tp);
+    // Apply travel prefs to inspector preferences for scheduler compatibility
+    setPrefs((prev) => ({
+      ...prev,
+      workStartHour: tp.workStartHour,
+      workEndHour: tp.workEndHour,
+      availableDays: tp.availableDays,
+      maxDailyInspections: tp.inspectionsPerDay,
+      maxDayTripMiles: tp.maxLocalDrivingRadiusMiles,
+      maxDailyDriveMiles: tp.maxDrivingDistanceMiles,
+      preferredTripLengthDays: tp.maxDaysAway,
+      dayTripPrefs: {
+        ...prev.dayTripPrefs,
+        availableDays: tp.availableDays,
+        maxDailyInspections: tp.inspectionsPerDay,
+        maxOneWayMiles: tp.maxLocalDrivingRadiusMiles,
+      },
+      travelTripPrefs: {
+        ...prev.travelTripPrefs,
+        availableDays: tp.availableDays,
+        maxDailyInspections: tp.inspectionsPerDay,
+        preferredTripLengthDays: tp.maxDaysAway,
+      },
+    }));
+    setStep("workspace");
+  }, []);
 
-      try {
-        const geocoded = await geocodeFarms(farms, (completed, total) => {
-          setGeocodeProgress({ completed, total });
-        });
-        setFarms(geocoded);
+  const handleScheduleEdit = useCallback((edit: ScheduleEdit) => {
+    setFarmUnavailableDates((prev) => applyEdit(edit, prev));
+  }, []);
 
-        const remaining = countUngeocoded(geocoded);
-        if (remaining > 0) {
-          setGeocodeError(
-            `${remaining} farm(s) could not be geocoded. They will use approximate locations.`
-          );
-        }
-
-        setIsGeocoding(false);
-        setStep("analyze");
-      } catch {
-        setIsGeocoding(false);
-        setGeocodeError("Geocoding failed. Please check your internet connection and try again.");
-      }
-    } else {
-      setStep("analyze");
-    }
-  }, [farms]);
-
-  // Live scheduler: recomputes whenever prefs, tripPlans, or unavailableDates change
-  const schedulerPrefs = step === "plan" ? prefs : null;
+  // Live scheduler: only compute when on workspace or contact step
+  const schedulerPrefs = (step === "workspace" || step === "contact") ? prefs : null;
   const { schedule, isComputing } = useScheduler(
     farms,
     schedulerPrefs,
-    tripPlans.length > 0 ? tripPlans : undefined,
+    undefined,
     Object.keys(farmUnavailableDates).length > 0 ? farmUnavailableDates : undefined
   );
 
-  const handleGenerateFromTripPlanner = useCallback(
-    (plans: TripPlan[], submittedPrefs: InspectorPreferences) => {
-      setPrefs(submittedPrefs);
-      setTripPlans(plans);
-      setStep("plan");
-    },
-    []
-  );
+  // ── Step navigation ──
 
-  const handleScheduleEdit = useCallback(
-    (edit: ScheduleEdit) => {
-      setFarmUnavailableDates((prev) => applyEdit(edit, prev));
-    },
-    []
-  );
+  const goToStep = useCallback((target: AppStep) => {
+    // Reset downstream state when going backward
+    if (target === "upload") {
+      setTravelPrefs(null);
+      setFarmUnavailableDates({});
+    }
+    if (target === "preferences") {
+      setFarmUnavailableDates({});
+    }
+    setStep(target);
+  }, []);
+
+  const goBack = useCallback(() => {
+    if (stepIndex <= 0) return;
+    const target = STEPS[stepIndex - 1].key;
+    goToStep(target);
+  }, [stepIndex, goToStep]);
+
+  // beforeunload warning when edits exist
+  useEffect(() => {
+    if (step !== "workspace" && step !== "contact") return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [step]);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -182,12 +191,7 @@ export default function Home() {
                     )}
                     <button
                       onClick={() => {
-                        if (!isClickable) return;
-                        if (s.key === "upload" || s.key === "analyze") {
-                          setTripPlans([]);
-                          setFarmUnavailableDates({});
-                        }
-                        setStep(s.key);
+                        if (isClickable) goToStep(s.key);
                       }}
                       disabled={!isClickable && !isCurrent}
                       className={`
@@ -222,16 +226,9 @@ export default function Home() {
       {/* ── Main Content ── */}
       <main className="flex-1 max-w-6xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 sm:py-10">
         {/* Back navigation */}
-        {stepIndex > 0 && !isGeocoding && (
+        {stepIndex > 0 && (
           <button
-            onClick={() => {
-              const target = STEPS[stepIndex - 1].key;
-              if (target === "upload" || target === "analyze") {
-                setTripPlans([]);
-                setFarmUnavailableDates({});
-              }
-              setStep(target);
-            }}
+            onClick={goBack}
             className="mb-6 text-sm text-primary-600/70 hover:text-primary-700 inline-flex items-center gap-1.5 cursor-pointer transition-colors duration-200 group"
           >
             <ArrowLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform duration-200" />
@@ -239,99 +236,48 @@ export default function Home() {
           </button>
         )}
 
-        {/* Step content with animation */}
+        {/* Step content */}
         <div className="animate-fade-in-up">
           {step === "upload" && (
-            <>
-              <FileUpload onFarmsLoaded={handleFarmsLoaded} />
-              {farms.length > 0 && (
-                <div className="max-w-2xl mx-auto mt-8 animate-fade-in-up">
-                  {/* Geocoding progress */}
-                  {isGeocoding && (
-                    <div className="mb-4 p-4 bg-primary-50 rounded-[var(--radius-lg)] border border-primary-100">
-                      <div className="flex items-center gap-3 mb-2">
-                        <Loader2 className="w-5 h-5 text-primary-600 animate-spin" />
-                        <span className="text-sm font-medium text-primary-700">
-                          Geocoding addresses...
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <MapPin className="w-4 h-4 text-primary-500" />
-                        <div className="flex-1">
-                          <div className="h-2 bg-primary-100 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-primary-500 rounded-full transition-all duration-300"
-                              style={{
-                                width: geocodeProgress.total > 0
-                                  ? `${(geocodeProgress.completed / geocodeProgress.total) * 100}%`
-                                  : "0%",
-                              }}
-                            />
-                          </div>
-                        </div>
-                        <span className="text-xs text-primary-600 tabular-nums">
-                          {geocodeProgress.completed}/{geocodeProgress.total} locations
-                        </span>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Geocoding error/warning */}
-                  {geocodeError && !isGeocoding && (
-                    <div className="mb-4 p-3 bg-amber-50 text-amber-800 text-sm rounded-[var(--radius-md)] border border-amber-200">
-                      {geocodeError}
-                    </div>
-                  )}
-
-                  <button
-                    onClick={handleContinueToAnalyze}
-                    disabled={isGeocoding}
-                    className="w-full py-3.5 px-6 bg-gradient-to-r from-primary-600 to-primary-700 text-white font-semibold rounded-[var(--radius-lg)] hover:from-primary-700 hover:to-primary-800 transition-all duration-200 shadow-md shadow-primary-600/20 cursor-pointer active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {isGeocoding ? "Geocoding..." : "Analyze Regions"}
-                  </button>
-                </div>
-              )}
-            </>
+            <UploadStep
+              farms={farms}
+              onFarmsLoaded={handleFarmsLoaded}
+              onComplete={handleUploadComplete}
+            />
           )}
 
-          {step === "analyze" && regionAnalysis && (
-            <div className="max-w-3xl mx-auto">
-              <RegionAnalysis analysis={regionAnalysis} />
-              <TripPlanner
-                analysis={regionAnalysis}
-                prefs={prefs}
-                onGenerateSchedule={handleGenerateFromTripPlanner}
-              />
-            </div>
+          {step === "preferences" && (
+            <PreferencesStep
+              farms={farms}
+              isGeocodingComplete={true}
+              onGenerateSchedule={handleGenerateSchedule}
+            />
           )}
 
-          {step === "plan" && (
-            <SplitScreenLayout
-              left={
-                <PreferencesPanel
-                  prefs={prefs}
-                  onChange={setPrefs}
-                  isComputing={isComputing}
-                />
-              }
-              right={
-                schedule ? (
-                  <SchedulePanel
-                    schedule={schedule}
-                    prefs={prefs}
-                    isComputing={isComputing}
-                    onEdit={handleScheduleEdit}
-                  />
-                ) : (
-                  <div className="flex items-center justify-center py-20">
-                    <div className="text-center">
-                      <Loader2 className="w-8 h-8 text-primary-400 animate-spin mx-auto mb-3" />
-                      <p className="text-sm text-primary-600/50">Generating schedule...</p>
-                    </div>
-                  </div>
-                )
-              }
+          {step === "workspace" && (
+            <WorkspaceStep
+              farms={farms}
+              schedule={schedule}
+              prefs={prefs}
+              isComputing={isComputing}
+              travelPrefs={travelPrefs || {
+                maxDaysAway: 4,
+                maxDrivingDistanceMiles: 300,
+                inspectionsPerDay: 3,
+                maxLocalDrivingRadiusMiles: 75,
+                workStartHour: 8,
+                workEndHour: 17,
+                availableDays: ["Mon", "Tue", "Wed", "Thu", "Fri"],
+              }}
+              onPrefsChange={setPrefs}
+              onScheduleEdit={handleScheduleEdit}
+            />
+          )}
+
+          {step === "contact" && (
+            <ContactStep
+              schedule={schedule}
+              onBack={() => goToStep("workspace")}
             />
           )}
         </div>

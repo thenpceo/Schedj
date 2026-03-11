@@ -11,7 +11,6 @@ import {
   IRS_MILEAGE_RATE,
   HOTEL_NIGHTLY_RATE,
   LUNCH_BREAK_MINUTES,
-  UNIVERSAL_CERTIFICATIONS,
 } from "./types";
 import {
   haversineDistance,
@@ -203,9 +202,6 @@ export function generateSchedule(
     return emptySchedule();
   }
 
-  // Stage 0: Certification check
-  const certificationWarnings = checkCertifications(farms, prefs);
-
   // Stage 0b: Infer urgency for farms with tight deadlines (CCOF never marks urgent)
   const startDate = parseISO(prefs.startDate);
   inferUrgency(farms, startDate);
@@ -226,14 +222,14 @@ export function generateSchedule(
   if (tripPlans && tripPlans.length > 0) {
     return generateTwoPhaseSchedule(
       selectedFarms, deferredFarms, prefs, tripPlans,
-      scored, certificationWarnings, startDate, farmUnavailableDates
+      scored, startDate, farmUnavailableDates
     );
   }
 
   // ── Legacy single-phase scheduling ──
   return generateSinglePhaseSchedule(
     selectedFarms, deferredFarms, prefs, scored,
-    certificationWarnings, startDate, farmUnavailableDates
+    startDate, farmUnavailableDates
   );
 }
 
@@ -244,7 +240,6 @@ function generateTwoPhaseSchedule(
   prefs: InspectorPreferences,
   tripPlans: TripPlan[],
   scored: { farm: Farm; score: number }[],
-  certificationWarnings: string[],
   startDate: Date,
   farmUnavailableDates?: Record<string, string[]>
 ): Schedule {
@@ -325,7 +320,7 @@ function generateTwoPhaseSchedule(
   trips.sort((a, b) => a.startDate.localeCompare(b.startDate));
   trips.forEach((t, i) => { t.tripNumber = i + 1; t.id = `trip-${i + 1}`; });
 
-  return buildScheduleResult(trips, selectedFarms, deferredFarms, scheduled, certificationWarnings, pass0.forfeited);
+  return buildScheduleResult(trips, selectedFarms, deferredFarms, scheduled, pass0.forfeited);
 }
 
 // Schedule day trips: cluster nearby farms, 1-day trips
@@ -409,7 +404,6 @@ function generateSinglePhaseSchedule(
   deferredFarms: Farm[],
   prefs: InspectorPreferences,
   scored: { farm: Farm; score: number }[],
-  certificationWarnings: string[],
   startDate: Date,
   farmUnavailableDates?: Record<string, string[]>
 ): Schedule {
@@ -424,7 +418,7 @@ function generateSinglePhaseSchedule(
   if (remainingSelected.length === 0) {
     // Re-number pass0 trips
     pass0.trips.forEach((t, i) => { t.tripNumber = i + 1; t.id = `trip-${i + 1}`; });
-    return buildScheduleResult(pass0.trips, selectedFarms, deferredFarms, preScheduled, certificationWarnings, pass0.forfeited);
+    return buildScheduleResult(pass0.trips, selectedFarms, deferredFarms, preScheduled, pass0.forfeited);
   }
 
   // Stage 2: Geographic clustering (only remaining selected farms)
@@ -450,8 +444,8 @@ function generateSinglePhaseSchedule(
 
   if (prefs.tripStyle === "pinwheel") {
     scoredClusters.sort((a, b) => {
-      const centroidA = centroid(a.farms);
-      const centroidB = centroid(b.farms);
+      const centroidA = centroid(a.farms) ?? { lat: prefs.homeLat, lng: prefs.homeLng };
+      const centroidB = centroid(b.farms) ?? { lat: prefs.homeLat, lng: prefs.homeLng };
       const angleA = Math.atan2(centroidA.lat - prefs.homeLat, centroidA.lng - prefs.homeLng);
       const angleB = Math.atan2(centroidB.lat - prefs.homeLat, centroidB.lng - prefs.homeLng);
       return angleA - angleB;
@@ -521,7 +515,7 @@ function generateSinglePhaseSchedule(
   trips.sort((a, b) => a.startDate.localeCompare(b.startDate));
   trips.forEach((t, i) => { t.tripNumber = i + 1; t.id = `trip-${i + 1}`; });
 
-  return buildScheduleResult(trips, selectedFarms, deferredFarms, scheduled, certificationWarnings, pass0.forfeited);
+  return buildScheduleResult(trips, selectedFarms, deferredFarms, scheduled, pass0.forfeited);
 }
 
 // ── Shared helpers for building trip and schedule objects ──
@@ -567,7 +561,6 @@ function buildScheduleResult(
   selectedFarms: Farm[],
   deferredFarms: Farm[],
   scheduled: Set<string>,
-  certificationWarnings: string[],
   forfeited: ForfeitedFarm[] = []
 ): Schedule {
   const forfeitedIds = new Set(forfeited.map((f) => f.farm.id));
@@ -590,35 +583,8 @@ function buildScheduleResult(
       end: allDates.length > 0 ? allDates[allDates.length - 1] : "",
     },
     totalEstimatedCost,
-    certificationWarnings,
+    certificationWarnings: [], // deprecated — kept for type compat
   };
-}
-
-// ── Stage 0: Certification check ──
-function checkCertifications(
-  farms: Farm[],
-  prefs: InspectorPreferences
-): string[] {
-  const warnings: string[] = [];
-  const certs = new Set(prefs.certifications.map((c) => c.toLowerCase()));
-  const universalCerts = new Set(UNIVERSAL_CERTIFICATIONS);
-
-  for (const farm of farms) {
-    const uncovered = farm.services.filter(
-      (s) => {
-        const lower = s.toLowerCase();
-        // Skip universal certs — every inspector has these
-        if (universalCerts.has(lower)) return false;
-        return !certs.has(lower);
-      }
-    );
-    if (uncovered.length > 0) {
-      warnings.push(
-        `${farm.name}: requires ${uncovered.join(", ")} (not in your certifications)`
-      );
-    }
-  }
-  return warnings;
 }
 
 // ── CCOF urgency inference: auto-upgrade farms with tight deadlines ──
@@ -726,7 +692,8 @@ export function kMeansCluster(farms: Farm[], k: number): Farm[][] {
   return clusters.filter((c) => c.length > 0);
 }
 
-export function centroid(farms: Farm[]): { lat: number; lng: number } {
+export function centroid(farms: Farm[]): { lat: number; lng: number } | null {
+  if (farms.length === 0) return null;
   return {
     lat: farms.reduce((s, f) => s + f.lat, 0) / farms.length,
     lng: farms.reduce((s, f) => s + f.lng, 0) / farms.length,
@@ -888,6 +855,7 @@ function packIntoDays(
     let dayMiles = isFirstDayOfTrip ? driveFromHomeMiles : 0;
     let dayDriveMinutes = isFirstDayOfTrip ? driveFromHomeMinutes : 0;
     let lunchTaken = false;
+    let secondLunchTaken = false;
     let inspectionCount = 0;
 
     while (farmIdx < farms.length) {
@@ -921,19 +889,33 @@ function packIntoDays(
       const inspectionMinutes = farm.estimatedDurationHours * 60;
 
       // Insert lunch break if needed (respects lunch preference)
+      // First break after 5h, second break after 8h for long days
       let lunchMinutes = 0;
       const wantsLunch = prefs.lunchPreference?.takeLunchBreak !== false;
-      if (!lunchTaken && minutesUsed > 5 * 60 && wantsLunch) {
-        lunchMinutes = prefs.lunchPreference?.lunchBreakMinutes || LUNCH_BREAK_MINUTES;
-        lunchTaken = true;
+      const lunchDuration = prefs.lunchPreference?.lunchBreakMinutes || LUNCH_BREAK_MINUTES;
+      if (wantsLunch) {
+        if (!lunchTaken && minutesUsed > 5 * 60) {
+          lunchMinutes = lunchDuration;
+          lunchTaken = true;
+        } else if (lunchTaken && !secondLunchTaken && minutesUsed > 8 * 60) {
+          lunchMinutes = lunchDuration;
+          secondLunchTaken = true;
+        }
       }
+
+      // Estimate drive-to-home time from this candidate farm
+      const driveHomeFromCandidateMinutes = driveTimeBetween(
+        farm.lat, farm.lng,
+        prefs.homeLat, prefs.homeLng
+      );
 
       const totalNeeded =
         (dayInspections.length === 0 ? 0 : driveMinutes) +
         lunchMinutes +
-        inspectionMinutes;
+        inspectionMinutes +
+        driveHomeFromCandidateMinutes; // reserve time to drive home
 
-      // Check if we'd exceed work hours
+      // Check if we'd exceed work hours (including drive home)
       if (minutesUsed + totalNeeded > workMinutes && dayInspections.length > 0) {
         break;
       }

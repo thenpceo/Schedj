@@ -102,7 +102,7 @@ function clusterAndLabel(
   const rawClusters = kMeansCluster(farms, k);
 
   return rawClusters.map((clusterFarms, i) => {
-    const center = centroid(clusterFarms);
+    const center = centroid(clusterFarms) ?? { lat: prefs.homeLat, lng: prefs.homeLng };
     const driveMinutes = driveTimeBetween(
       prefs.homeLat, prefs.homeLng,
       center.lat, center.lng

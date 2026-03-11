@@ -25,7 +25,6 @@ import {
   PhoneCall,
   Check,
   Home,
-  ShieldAlert,
 } from "lucide-react";
 import { Schedule, Trip, TripDay, ScheduledInspection, InspectorPreferences } from "@/lib/types";
 import { scheduleToCSV } from "@/lib/scheduler";
@@ -143,27 +142,6 @@ export default function ScheduleView({ schedule, prefs }: ScheduleViewProps) {
         />
       </div>
 
-      {/* ── Certification Warnings ── */}
-      {schedule.certificationWarnings.length > 0 && (
-        <div className="mb-6 bg-purple-50 border border-purple-200 rounded-[var(--radius-xl)] p-4 sm:p-5 animate-fade-in-up">
-          <div className="flex items-start gap-3">
-            <ShieldAlert className="w-5 h-5 text-purple-500 mt-0.5 flex-shrink-0" />
-            <div>
-              <p className="font-semibold text-purple-700 text-sm">
-                Certification Mismatch
-              </p>
-              <p className="text-xs text-purple-600 mt-0.5 mb-1.5">
-                These farms require certifications not in your profile. They are still scheduled but may need reassignment.
-              </p>
-              <ul className="text-sm text-purple-600 space-y-0.5">
-                {schedule.certificationWarnings.map((w, i) => (
-                  <li key={i} className="text-xs">{w}</li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ── Forfeited Deadlines Warning ── */}
       {schedule.forfeited && schedule.forfeited.length > 0 && (

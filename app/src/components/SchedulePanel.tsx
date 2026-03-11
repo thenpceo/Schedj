@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import {
   Download,
   CalendarDays,
@@ -25,14 +25,11 @@ import {
   PhoneCall,
   Check,
   Home,
-  ShieldAlert,
   X,
   CalendarOff,
   RefreshCw,
-  List,
-  Calendar,
+  Bed,
 } from "lucide-react";
-import CalendarView from "@/components/CalendarView";
 import {
   Schedule,
   Trip,
@@ -51,6 +48,8 @@ interface SchedulePanelProps {
   prefs: InspectorPreferences;
   isComputing?: boolean;
   onEdit?: (edit: ScheduleEdit) => void;
+  selectedFarmIds?: Set<string>;
+  onToggleFarm?: (farmId: string) => void;
 }
 
 export default function SchedulePanel({
@@ -58,8 +57,9 @@ export default function SchedulePanel({
   prefs,
   isComputing,
   onEdit,
+  selectedFarmIds,
+  onToggleFarm,
 }: SchedulePanelProps) {
-  const [viewMode, setViewMode] = useState<"list" | "calendar">("list");
   const [expandedTrips, setExpandedTrips] = useState<Set<string>>(
     new Set(schedule.trips.map((t) => t.id))
   );
@@ -127,31 +127,6 @@ export default function SchedulePanel({
           </p>
         </div>
         <div className="flex items-center gap-2 w-full sm:w-auto">
-          {/* View toggle */}
-          <div className="flex bg-earth-100 rounded-[var(--radius-md)] p-0.5">
-            <button
-              onClick={() => setViewMode("list")}
-              className={`p-2 rounded-[var(--radius-sm)] transition-all duration-200 cursor-pointer ${
-                viewMode === "list"
-                  ? "bg-white text-primary-700 shadow-sm"
-                  : "text-primary-500/40 hover:text-primary-600"
-              }`}
-              title="List view"
-            >
-              <List className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => setViewMode("calendar")}
-              className={`p-2 rounded-[var(--radius-sm)] transition-all duration-200 cursor-pointer ${
-                viewMode === "calendar"
-                  ? "bg-white text-primary-700 shadow-sm"
-                  : "text-primary-500/40 hover:text-primary-600"
-              }`}
-              title="Calendar view"
-            >
-              <Calendar className="w-4 h-4" />
-            </button>
-          </div>
           <button
             onClick={exportCSV}
             className="flex-1 sm:flex-none px-5 py-2.5 bg-gradient-to-r from-primary-600 to-primary-700 text-white rounded-[var(--radius-md)] hover:from-primary-700 hover:to-primary-800 transition-all duration-200 font-semibold text-sm inline-flex items-center justify-center gap-2 shadow-md shadow-primary-600/20 cursor-pointer active:scale-[0.98]"
@@ -171,22 +146,6 @@ export default function SchedulePanel({
         <BentoCard icon={DollarSign} label="Est. Cost" value={`$${schedule.totalEstimatedCost.toLocaleString()}`} accent="green" />
       </div>
 
-      {/* Warnings */}
-      {schedule.certificationWarnings.length > 0 && (
-        <div className="mb-4 bg-purple-50 border border-purple-200 rounded-[var(--radius-lg)] p-4">
-          <div className="flex items-start gap-2">
-            <ShieldAlert className="w-4 h-4 text-purple-500 mt-0.5 shrink-0" />
-            <div>
-              <p className="font-semibold text-purple-700 text-sm">Certification Mismatch</p>
-              <ul className="text-xs text-purple-600 mt-1 space-y-0.5">
-                {schedule.certificationWarnings.map((w, i) => (
-                  <li key={i}>{w}</li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        </div>
-      )}
 
       {schedule.forfeited && schedule.forfeited.length > 0 && (
         <div className="mb-4 bg-red-50 border border-red-200 rounded-[var(--radius-lg)] p-4">
@@ -226,80 +185,77 @@ export default function SchedulePanel({
         </div>
       )}
 
-      {/* Calendar view */}
-      {viewMode === "calendar" && (
-        <CalendarView schedule={schedule} />
+      {/* Trip sections by type */}
+      {travelTrips.length > 0 && (
+        <div className="mb-4">
+          <h3 className="text-xs font-semibold text-blue-600 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+            <div className="w-2 h-2 rounded-full bg-blue-500" />
+            Travel Trips
+          </h3>
+          <div className="space-y-3">
+            {travelTrips.map((trip) => (
+              <TripSection
+                key={trip.id}
+                trip={trip}
+                prefs={prefs}
+                expanded={expandedTrips.has(trip.id)}
+                onToggle={() => toggleTrip(trip.id)}
+                onEdit={onEdit}
+                accentColor="blue"
+                isMultiAgency={isMultiAgency}
+                selectedFarmIds={selectedFarmIds}
+                onToggleFarm={onToggleFarm}
+              />
+            ))}
+          </div>
+        </div>
       )}
 
-      {/* List view — Trip sections by type */}
-      {viewMode === "list" && (
-        <>
+      {dayTrips.length > 0 && (
+        <div>
           {travelTrips.length > 0 && (
-            <div className="mb-4">
-              <h3 className="text-xs font-semibold text-blue-600 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full bg-blue-500" />
-                Travel Trips
-              </h3>
-              <div className="space-y-3">
-                {travelTrips.map((trip) => (
-                  <TripSection
-                    key={trip.id}
-                    trip={trip}
-                    prefs={prefs}
-                    expanded={expandedTrips.has(trip.id)}
-                    onToggle={() => toggleTrip(trip.id)}
-                    onEdit={onEdit}
-                    accentColor="blue"
-                    isMultiAgency={isMultiAgency}
-                  />
-                ))}
-              </div>
-            </div>
+            <h3 className="text-xs font-semibold text-emerald-600 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+              <div className="w-2 h-2 rounded-full bg-emerald-500" />
+              Day Trips
+            </h3>
           )}
+          <div className="space-y-3">
+            {dayTrips.map((trip) => (
+              <TripSection
+                key={trip.id}
+                trip={trip}
+                prefs={prefs}
+                expanded={expandedTrips.has(trip.id)}
+                onToggle={() => toggleTrip(trip.id)}
+                onEdit={onEdit}
+                accentColor="emerald"
+                isMultiAgency={isMultiAgency}
+                selectedFarmIds={selectedFarmIds}
+                onToggleFarm={onToggleFarm}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
-          {dayTrips.length > 0 && (
-            <div>
-              {travelTrips.length > 0 && (
-                <h3 className="text-xs font-semibold text-emerald-600 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                  <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                  Day Trips
-                </h3>
-              )}
-              <div className="space-y-3">
-                {dayTrips.map((trip) => (
-                  <TripSection
-                    key={trip.id}
-                    trip={trip}
-                    prefs={prefs}
-                    expanded={expandedTrips.has(trip.id)}
-                    onToggle={() => toggleTrip(trip.id)}
-                    onEdit={onEdit}
-                    accentColor="emerald"
-                    isMultiAgency={isMultiAgency}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Fallback: show all trips unsorted if none have tripType set */}
-          {travelTrips.length === 0 && dayTrips.length === 0 && (
-            <div className="space-y-3">
-              {schedule.trips.map((trip) => (
-                <TripSection
-                  key={trip.id}
-                  trip={trip}
-                  prefs={prefs}
-                  expanded={expandedTrips.has(trip.id)}
-                  onToggle={() => toggleTrip(trip.id)}
-                  onEdit={onEdit}
-                  accentColor="green"
-                  isMultiAgency={isMultiAgency}
-                />
-              ))}
-            </div>
-          )}
-        </>
+      {/* Fallback: show all trips unsorted if none have tripType set */}
+      {travelTrips.length === 0 && dayTrips.length === 0 && (
+        <div className="space-y-3">
+          {schedule.trips.map((trip) => (
+            <TripSection
+              key={trip.id}
+              trip={trip}
+              prefs={prefs}
+              expanded={expandedTrips.has(trip.id)}
+              onToggle={() => toggleTrip(trip.id)}
+              onEdit={onEdit}
+              accentColor="green"
+              isMultiAgency={isMultiAgency}
+              selectedFarmIds={selectedFarmIds}
+              onToggleFarm={onToggleFarm}
+            />
+          ))}
+        </div>
       )}
     </div>
   );
@@ -350,6 +306,8 @@ function TripSection({
   onEdit,
   accentColor,
   isMultiAgency = false,
+  selectedFarmIds,
+  onToggleFarm,
 }: {
   trip: Trip;
   prefs: InspectorPreferences;
@@ -358,9 +316,32 @@ function TripSection({
   onEdit?: (edit: ScheduleEdit) => void;
   accentColor: string;
   isMultiAgency?: boolean;
+  selectedFarmIds?: Set<string>;
+  onToggleFarm?: (farmId: string) => void;
 }) {
   const borderColor = accentColor === "blue" ? "border-blue-200" : accentColor === "emerald" ? "border-emerald-200" : "border-earth-200";
   const hoverBorder = accentColor === "blue" ? "hover:border-blue-300" : accentColor === "emerald" ? "hover:border-emerald-300" : "hover:border-earth-300";
+
+  // Compute hotel suggestion for multi-day trips
+  const hotelSuggestion = useMemo(() => {
+    if (trip.tripType !== "multi_day" || trip.days.length === 0) return null;
+    const allFarms = trip.days.flatMap((d) => d.inspections.map((i) => i.farm));
+    if (allFarms.length === 0) return null;
+    // Use centroid's nearest farm for city/state/zip
+    const sumLat = allFarms.reduce((s, f) => s + f.lat, 0);
+    const sumLng = allFarms.reduce((s, f) => s + f.lng, 0);
+    const centLat = sumLat / allFarms.length;
+    const centLng = sumLng / allFarms.length;
+    // Find nearest farm to centroid
+    let nearest = allFarms[0];
+    let minDist = Infinity;
+    for (const f of allFarms) {
+      const d = (f.lat - centLat) ** 2 + (f.lng - centLng) ** 2;
+      if (d < minDist) { minDist = d; nearest = f; }
+    }
+    if (!nearest.city && !nearest.zip) return null;
+    return { city: nearest.city, state: nearest.state, zip: nearest.zip };
+  }, [trip]);
 
   return (
     <div className={`bg-white border ${borderColor} ${hoverBorder} rounded-[var(--radius-xl)] overflow-hidden shadow-sm transition-colors duration-200`}>
@@ -390,6 +371,12 @@ function TripSection({
           </div>
         </div>
         <div className="flex items-center gap-1.5">
+          {hotelSuggestion && (
+            <span className="text-[10px] font-medium text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded-full ring-1 ring-blue-100 inline-flex items-center gap-0.5">
+              <Bed className="w-2.5 h-2.5" />
+              {hotelSuggestion.city}{hotelSuggestion.zip ? `, ${hotelSuggestion.zip}` : ""}
+            </span>
+          )}
           {trip.overnightsRequired > 0 && (
             <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded-full ring-1 ring-blue-100">
               {trip.overnightsRequired}N
@@ -412,6 +399,8 @@ function TripSection({
               prefs={prefs}
               onEdit={onEdit}
               isMultiAgency={isMultiAgency}
+              selectedFarmIds={selectedFarmIds}
+              onToggleFarm={onToggleFarm}
             />
           ))}
         </div>
@@ -428,6 +417,8 @@ function DaySection({
   prefs,
   onEdit,
   isMultiAgency = false,
+  selectedFarmIds,
+  onToggleFarm,
 }: {
   day: TripDay;
   dayIndex: number;
@@ -435,6 +426,8 @@ function DaySection({
   prefs: InspectorPreferences;
   onEdit?: (edit: ScheduleEdit) => void;
   isMultiAgency?: boolean;
+  selectedFarmIds?: Set<string>;
+  onToggleFarm?: (farmId: string) => void;
 }) {
   return (
     <div className={dayIndex > 0 ? "border-t border-earth-100" : ""}>
@@ -476,6 +469,8 @@ function DaySection({
             prefs={prefs}
             onEdit={onEdit}
             isMultiAgency={isMultiAgency}
+            isSelected={selectedFarmIds?.has(insp.farm.id) ?? false}
+            onToggleSelect={onToggleFarm ? () => onToggleFarm(insp.farm.id) : undefined}
           />
         ))}
       </div>
@@ -505,16 +500,33 @@ function InspectionRow({
   prefs,
   onEdit,
   isMultiAgency = false,
+  isSelected = false,
+  onToggleSelect,
 }: {
   inspection: ScheduledInspection;
   prefs: InspectorPreferences;
   onEdit?: (edit: ScheduleEdit) => void;
   isMultiAgency?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: () => void;
 }) {
   const { farm } = inspection;
   const [copiedEmail, setCopiedEmail] = useState(false);
   const [copiedCall, setCopiedCall] = useState(false);
   const [showActions, setShowActions] = useState(false);
+
+  // Check window violation inline
+  const windowViolation = useMemo(() => {
+    if (!farm.completionFrom && !farm.completionUntil) return null;
+    const inspDate = inspection.date;
+    if (farm.completionFrom && inspDate < farm.completionFrom) {
+      return `Scheduled before window opens (${format(parseISO(farm.completionFrom), "MMM d")})`;
+    }
+    if (farm.completionUntil && inspDate > farm.completionUntil) {
+      return `Scheduled after window closes (${format(parseISO(farm.completionUntil), "MMM d")})`;
+    }
+    return null;
+  }, [inspection.date, farm.completionFrom, farm.completionUntil]);
 
   const script = generateContactScript(inspection, prefs);
 
@@ -563,7 +575,21 @@ function InspectionRow({
   };
 
   return (
-    <div className="px-4 py-3 hover:bg-primary-50/20 transition-colors duration-150 group">
+    <div className={`px-4 py-3 transition-colors duration-150 group ${
+      windowViolation
+        ? "bg-red-50/60 hover:bg-red-50"
+        : isSelected
+          ? "bg-primary-50/40 hover:bg-primary-50/60"
+          : "hover:bg-primary-50/20"
+    }`}>
+      {/* Window violation banner */}
+      {windowViolation && (
+        <div className="mb-1.5 flex items-center gap-1.5 text-[10px] text-red-600 font-medium">
+          <AlertTriangle className="w-3 h-3 shrink-0" />
+          {windowViolation}
+        </div>
+      )}
+
       {/* Drive chip */}
       {inspection.driveDistanceFromPrevMiles > 0 && (
         <div className="mb-1.5">
@@ -575,8 +601,21 @@ function InspectionRow({
       )}
 
       <div className="flex items-start justify-between gap-2">
-        {/* Left: details */}
-        <div className="flex-1 min-w-0">
+        {/* Left: checkbox + details */}
+        <div className="flex items-start gap-2 flex-1 min-w-0">
+          {onToggleSelect && (
+            <button
+              onClick={onToggleSelect}
+              className={`mt-0.5 w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 cursor-pointer transition-colors duration-150 ${
+                isSelected
+                  ? "bg-primary-600 border-primary-600 text-white"
+                  : "border-earth-300 hover:border-primary-400"
+              }`}
+            >
+              {isSelected && <Check className="w-2.5 h-2.5" />}
+            </button>
+          )}
+          <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h4 className="font-[family-name:var(--font-display)] font-semibold text-primary-800 text-sm">
               {farm.name}
@@ -724,6 +763,7 @@ function InspectionRow({
               </div>
             )}
           </div>
+        </div>
         </div>
 
         {/* Right: badges */}
