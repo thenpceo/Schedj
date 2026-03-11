@@ -10,6 +10,9 @@ import {
   AlertTriangle,
   Loader2,
   ArrowRight,
+  CheckCircle2,
+  Plane,
+  Car,
 } from "lucide-react";
 import {
   Farm,
@@ -42,14 +45,18 @@ const TABS: { key: WorkspaceTab; label: string; icon: React.ElementType }[] = [
   { key: "map", label: "Map", icon: Map },
 ];
 
+import type { WorkspacePhase } from "@/app/page";
+
 interface WorkspaceStepProps {
   farms: Farm[];
   schedule: Schedule | null;
   prefs: InspectorPreferences;
   isComputing: boolean;
   travelPrefs: TravelPrefs;
+  workspacePhase: WorkspacePhase;
   onPrefsChange: (prefs: InspectorPreferences) => void;
   onScheduleEdit: (edit: ScheduleEdit) => void;
+  onApproveTravelTrips: (schedule: Schedule) => void;
   onComplete: () => void;
 }
 
@@ -90,8 +97,10 @@ export default function WorkspaceStep({
   prefs,
   isComputing,
   travelPrefs,
+  workspacePhase,
   onPrefsChange,
   onScheduleEdit,
+  onApproveTravelTrips,
   onComplete,
 }: WorkspaceStepProps) {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("trips");
@@ -227,8 +236,75 @@ export default function WorkspaceStep({
     );
   }
 
+  const isTravelPhase = workspacePhase === "travel";
+  const noTravelTrips = isTravelPhase && schedule && schedule.trips.length === 0;
+
+  // When Phase 1 has no travel trips, show a clear message and skip option
+  if (noTravelTrips) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-3 px-4 py-3 rounded-[var(--radius-md)] border bg-blue-50 border-blue-200">
+          <Plane className="w-5 h-5 text-blue-600" />
+          <div>
+            <p className="text-sm font-semibold text-blue-800">Phase 1: Travel Trips</p>
+            <p className="text-xs text-blue-600/70">Checking for farms that require overnight travel...</p>
+          </div>
+        </div>
+
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <div className="w-16 h-16 rounded-full bg-primary-50 flex items-center justify-center mb-4">
+            <Car className="w-8 h-8 text-primary-500" />
+          </div>
+          <h3 className="text-lg font-semibold text-primary-800 mb-2">No Travel Trips Needed</h3>
+          <p className="text-sm text-primary-600/70 max-w-md mb-1">
+            All {farms.length} farms are within day-trip driving range of your home location.
+          </p>
+          <p className="text-xs text-primary-600/50 max-w-md mb-8">
+            No overnight travel required — proceeding to generate your day trip schedule.
+          </p>
+          <button
+            onClick={() => onApproveTravelTrips(schedule!)}
+            className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-primary-600 to-primary-700 text-white font-semibold rounded-[var(--radius-lg)] hover:from-primary-700 hover:to-primary-800 transition-all duration-200 shadow-md shadow-primary-600/20 cursor-pointer active:scale-[0.98]"
+          >
+            <CheckCircle2 className="w-4 h-4" />
+            Continue to Day Trips
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
+      {/* Phase indicator banner */}
+      <div className={`flex items-center gap-3 px-4 py-3 rounded-[var(--radius-md)] border ${
+        isTravelPhase
+          ? "bg-blue-50 border-blue-200"
+          : "bg-primary-50 border-primary-200"
+      }`}>
+        {isTravelPhase ? (
+          <>
+            <Plane className="w-5 h-5 text-blue-600" />
+            <div>
+              <p className="text-sm font-semibold text-blue-800">Phase 1: Travel Trips</p>
+              <p className="text-xs text-blue-600/70">Review and adjust overnight travel trips. Approve when ready to add day trips.</p>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-primary-600" />
+              <Car className="w-5 h-5 text-primary-600" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-primary-800">Phase 2: Full Schedule</p>
+              <p className="text-xs text-primary-600/70">Travel trips locked. Day trips fill in the remaining schedule.</p>
+            </div>
+          </>
+        )}
+      </div>
+
       {/* Tab bar + undo/redo */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1 bg-earth-100 rounded-[var(--radius-lg)] p-1">
@@ -358,15 +434,27 @@ export default function WorkspaceStep({
         onClearSelection={handleClearSelection}
       />
 
-      {/* Proceed to Contact */}
+      {/* Phase-aware bottom action */}
       <div className="mt-6 flex justify-end">
-        <button
-          onClick={onComplete}
-          className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-primary-600 to-primary-700 text-white font-semibold rounded-[var(--radius-lg)] hover:from-primary-700 hover:to-primary-800 transition-all duration-200 shadow-md shadow-primary-600/20 cursor-pointer active:scale-[0.98]"
-        >
-          Proceed to Contact
-          <ArrowRight className="w-4 h-4" />
-        </button>
+        {isTravelPhase ? (
+          <button
+            onClick={() => schedule && onApproveTravelTrips(schedule)}
+            disabled={!schedule}
+            className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white font-semibold rounded-[var(--radius-lg)] hover:from-blue-700 hover:to-blue-800 transition-all duration-200 shadow-md shadow-blue-600/20 cursor-pointer active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <CheckCircle2 className="w-4 h-4" />
+            Approve Travel Trips
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        ) : (
+          <button
+            onClick={onComplete}
+            className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-primary-600 to-primary-700 text-white font-semibold rounded-[var(--radius-lg)] hover:from-primary-700 hover:to-primary-800 transition-all duration-200 shadow-md shadow-primary-600/20 cursor-pointer active:scale-[0.98]"
+          >
+            Proceed to Contact
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        )}
       </div>
 
       {/* Returned farms bucket */}

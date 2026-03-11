@@ -416,28 +416,98 @@ function generateSinglePhaseSchedule(
   const remainingSelected = selectedFarms.filter((f) => !preScheduled.has(f.id));
 
   if (remainingSelected.length === 0) {
-    // Re-number pass0 trips
     pass0.trips.forEach((t, i) => { t.tripNumber = i + 1; t.id = `trip-${i + 1}`; });
     return buildScheduleResult(pass0.trips, selectedFarms, deferredFarms, preScheduled, pass0.forfeited);
   }
 
-  // Stage 2: Geographic clustering (only remaining selected farms)
-  const avgDuration =
-    remainingSelected.reduce((s, f) => s + f.estimatedDurationHours, 0) / remainingSelected.length;
+  // Stage 2: Split farms by drive-time zone BEFORE clustering
+  const threshold = prefs.dayTripThresholdMinutes || 180;
+  const dayTripPool: Farm[] = [];
+  const travelPool: Farm[] = [];
+
+  for (const farm of remainingSelected) {
+    if (farm.lat === 0 && farm.lng === 0) {
+      dayTripPool.push(farm); // no coordinates — default to day trip
+      continue;
+    }
+    const driveMinutes = driveTimeBetween(prefs.homeLat, prefs.homeLng, farm.lat, farm.lng);
+    if (driveMinutes <= threshold) {
+      dayTripPool.push(farm);
+    } else {
+      travelPool.push(farm);
+    }
+  }
+
+  const trips: Trip[] = [...pass0.trips];
+  const scheduled = new Set<string>(preScheduled);
+
+  // Schedule travel trips first (multi-day)
+  if (travelPool.length > 0) {
+    const travelTrips = scheduleTravelPool(
+      travelPool, prefs, scored, startDate, preBlockedDates, farmUnavailableDates
+    );
+    for (const trip of travelTrips) {
+      trips.push(trip);
+      for (const day of trip.days) {
+        preBlockedDates.add(day.date);
+        for (const insp of day.inspections) {
+          scheduled.add(insp.farm.id);
+        }
+      }
+    }
+  }
+
+  // Schedule day trips around travel dates
+  const remainingDayTripFarms = dayTripPool.filter((f) => !scheduled.has(f.id));
+  if (remainingDayTripFarms.length > 0) {
+    const dayTrips = scheduleDayTrips(
+      remainingDayTripFarms,
+      { ...prefs, preferredTripLengthDays: 1 },
+      scored, startDate, preBlockedDates, farmUnavailableDates
+    );
+    for (const trip of dayTrips) {
+      trips.push(trip);
+      for (const day of trip.days) {
+        for (const insp of day.inspections) {
+          scheduled.add(insp.farm.id);
+        }
+      }
+    }
+  }
+
+  // Re-number trips by start date
+  trips.sort((a, b) => a.startDate.localeCompare(b.startDate));
+  trips.forEach((t, i) => { t.tripNumber = i + 1; t.id = `trip-${i + 1}`; });
+
+  return buildScheduleResult(trips, selectedFarms, deferredFarms, scheduled, pass0.forfeited);
+}
+
+// Schedule only travel-zone farms (multi-day trips)
+function scheduleTravelPool(
+  farms: Farm[],
+  prefs: InspectorPreferences,
+  scored: { farm: Farm; score: number }[],
+  startDate: Date,
+  blockedDates: Set<string>,
+  farmUnavailableDates?: Record<string, string[]>
+): Trip[] {
+  const trips: Trip[] = [];
+  const scheduled = new Set<string>();
+
+  const avgDuration = farms.reduce((s, f) => s + f.estimatedDurationHours, 0) / farms.length;
   const workHours = prefs.workEndHour - prefs.workStartHour;
   const farmsPerDay = Math.min(
     prefs.maxDailyInspections,
     Math.max(1, Math.floor(workHours / avgDuration))
   );
   const farmsPerTrip = farmsPerDay * prefs.preferredTripLengthDays;
-  const k = Math.max(1, Math.ceil(remainingSelected.length / Math.max(1, farmsPerTrip)));
+  const k = Math.max(1, Math.ceil(farms.length / Math.max(1, farmsPerTrip)));
 
-  const clusters = kMeansCluster(remainingSelected, k);
+  const clusters = kMeansCluster(farms, k);
 
-  // Sort clusters: most urgent first (highest max score in cluster)
   const scoredClusters = clusters.map((cluster) => {
     const maxScore = Math.max(
-      ...cluster.map((f) => scored.find((s) => s.farm.id === f.id)!.score)
+      ...cluster.map((f) => scored.find((s) => s.farm.id === f.id)?.score ?? 0)
     );
     return { farms: cluster, maxScore };
   });
@@ -454,17 +524,14 @@ function generateSinglePhaseSchedule(
     scoredClusters.sort((a, b) => b.maxScore - a.maxScore);
   }
 
-  // Stage 3 & 4: Optimize routes and pack into days
-  const trips: Trip[] = [...pass0.trips];
-  const scheduled = new Set<string>(preScheduled);
   let currentDate = new Date(startDate);
 
   for (const cluster of scoredClusters) {
-    let clusterRemainingFarms = cluster.farms.filter((f) => !scheduled.has(f.id));
-    if (clusterRemainingFarms.length === 0) continue;
+    let remaining = cluster.farms.filter((f) => !scheduled.has(f.id));
+    if (remaining.length === 0) continue;
 
-    while (clusterRemainingFarms.length > 0) {
-      const earliestWindow = clusterRemainingFarms
+    while (remaining.length > 0) {
+      const earliestWindow = remaining
         .filter((f) => f.completionFrom)
         .map((f) => parseISO(f.completionFrom))
         .sort((a, b) => a.getTime() - b.getTime())[0];
@@ -473,16 +540,15 @@ function generateSinglePhaseSchedule(
         currentDate = new Date(earliestWindow);
       }
 
-      // Skip dates blocked by Pass 0
       currentDate = skipToAvailableDay(currentDate, prefs);
       let safety = 0;
-      while (preBlockedDates.has(format(currentDate, "yyyy-MM-dd")) && safety < 365) {
+      while (blockedDates.has(format(currentDate, "yyyy-MM-dd")) && safety < 365) {
         currentDate = addDays(currentDate, 1);
         currentDate = skipToAvailableDay(currentDate, prefs);
         safety++;
       }
 
-      const ordered = optimizeRoute(clusterRemainingFarms, prefs);
+      const ordered = optimizeRoute(remaining, prefs);
       const tripDays = packIntoDays(ordered, prefs, currentDate, farmUnavailableDates);
       if (tripDays.length === 0) break;
 
@@ -494,28 +560,60 @@ function generateSinglePhaseSchedule(
         }
       }
 
-      // Determine trip type based on distance from home
-      const tripFarms = clusterRemainingFarms.filter((f) => scheduledInTrip.has(f.id));
-      const allNearHome = tripFarms.every(
-        (f) => driveTimeBetween(prefs.homeLat, prefs.homeLng, f.lat, f.lng) <=
-          (prefs.dayTripThresholdMinutes || 180)
-      );
-      const tripType: TripType = allNearHome ? "day_trip" : "multi_day";
-
-      const trip = buildTrip(trips.length, tripDays, tripFarms, prefs, tripType);
+      const tripFarms = remaining.filter((f) => scheduledInTrip.has(f.id));
+      const trip = buildTrip(trips.length, tripDays, tripFarms, prefs, "multi_day");
       trips.push(trip);
 
       const lastTripDate = parseISO(tripDays[tripDays.length - 1].date);
       currentDate = addDays(lastTripDate, prefs.restDaysBetweenTrips + 1);
-      clusterRemainingFarms = clusterRemainingFarms.filter((f) => !scheduledInTrip.has(f.id));
+      remaining = remaining.filter((f) => !scheduledInTrip.has(f.id));
     }
   }
 
-  // Re-number trips by start date
-  trips.sort((a, b) => a.startDate.localeCompare(b.startDate));
-  trips.forEach((t, i) => { t.tripNumber = i + 1; t.id = `trip-${i + 1}`; });
+  return trips;
+}
 
-  return buildScheduleResult(trips, selectedFarms, deferredFarms, scheduled, pass0.forfeited);
+// Generate schedule with ONLY travel-zone farms (for Phase A workspace)
+export function generateTravelTripsOnly(
+  farms: Farm[],
+  prefs: InspectorPreferences,
+  farmUnavailableDates?: Record<string, string[]>
+): Schedule {
+  if (farms.length === 0) return emptySchedule();
+
+  const startDate = parseISO(prefs.startDate);
+  inferUrgency(farms, startDate);
+
+  const threshold = prefs.dayTripThresholdMinutes || 180;
+  const travelFarms = farms.filter(
+    (f) => f.lat !== 0 && f.lng !== 0 &&
+      driveTimeBetween(prefs.homeLat, prefs.homeLng, f.lat, f.lng) > threshold
+  );
+
+  if (travelFarms.length === 0) return emptySchedule();
+
+  const scored = travelFarms.map((f) => ({ farm: f, score: scoreFarm(f, startDate) }));
+  const targetCount = Math.min(prefs.annualInspectionTarget, travelFarms.length);
+  const sortedByScore = [...scored].sort((a, b) => b.score - a.score);
+  const selectedFarms = sortedByScore.slice(0, targetCount).map((s) => s.farm);
+  const deferredFarms = sortedByScore.slice(targetCount).map((s) => s.farm);
+
+  return generateSinglePhaseSchedule(
+    selectedFarms, deferredFarms, prefs, scored, startDate, farmUnavailableDates
+  );
+}
+
+// Convert approved trips into TripPlan objects for the two-phase scheduler
+export function tripsToTripPlans(trips: Trip[]): TripPlan[] {
+  return trips
+    .filter((t) => t.tripType === "multi_day")
+    .map((t) => ({
+      clusterId: t.clusterId || t.id,
+      tripType: "multi_day" as TripType,
+      preferredStartDate: t.startDate,
+      locked: true,
+      farms: t.days.flatMap((d) => d.inspections.map((i) => i.farm)),
+    }));
 }
 
 // ── Shared helpers for building trip and schedule objects ──

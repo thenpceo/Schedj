@@ -114,7 +114,7 @@ export default function SchedulePanel({
               <RefreshCw className="w-4 h-4 text-primary-400 animate-spin" />
             )}
           </div>
-          <p className="text-sm text-primary-700/50 mt-1">
+          <p className="text-sm text-primary-700/75 mt-1">
             {schedule.totalFarms} inspections across {schedule.totalTrips} trips
             {schedule.dateRange.start && (
               <>
@@ -287,11 +287,11 @@ function BentoCard({
     <div className={`${a.bg} rounded-[var(--radius-lg)] p-3 ring-1 ${a.ring}`}>
       <div className="flex items-center gap-1.5 mb-1">
         <Icon className={`w-3.5 h-3.5 ${a.icon}`} />
-        <p className="text-[10px] font-bold text-primary-700/50 uppercase tracking-wider">{label}</p>
+        <p className="text-[10px] font-bold text-primary-700/75 uppercase tracking-wider">{label}</p>
       </div>
       <p className="text-xl font-bold text-primary-800 font-[family-name:var(--font-display)]">
         {value}
-        {suffix && <span className="text-xs font-normal text-primary-600/40 ml-0.5">{suffix}</span>}
+        {suffix && <span className="text-xs font-normal text-primary-600/65 ml-0.5">{suffix}</span>}
       </p>
     </div>
   );
@@ -440,7 +440,7 @@ function DaySection({
             {format(parseISO(day.date), "EEE, MMM d")}
           </span>
         </div>
-        <div className="flex items-center gap-3 text-[11px] text-primary-600/40">
+        <div className="flex items-center gap-3 text-[11px] text-primary-600/65">
           <span className="inline-flex items-center gap-1">
             <Car className="w-3 h-3" />
             {day.totalDriveMiles} mi
@@ -593,7 +593,7 @@ function InspectionRow({
       {/* Drive chip */}
       {inspection.driveDistanceFromPrevMiles > 0 && (
         <div className="mb-1.5">
-          <span className="text-[10px] text-primary-600/40 inline-flex items-center gap-1 bg-earth-50 px-2 py-0.5 rounded-full">
+          <span className="text-[10px] text-primary-600/65 inline-flex items-center gap-1 bg-earth-50 px-2 py-0.5 rounded-full">
             <Car className="w-2.5 h-2.5" />
             {inspection.driveDistanceFromPrevMiles} mi · ~{inspection.driveTimeFromPrevMinutes} min
           </span>
@@ -646,7 +646,7 @@ function InspectionRow({
           </div>
 
           {/* IDs */}
-          <div className="flex items-center gap-2 mt-0.5 text-[10px] text-primary-600/35">
+          <div className="flex items-center gap-2 mt-0.5 text-[10px] text-primary-600/60">
             {farm.nopId && (
               <span className="inline-flex items-center gap-0.5">
                 <Hash className="w-2.5 h-2.5" />
@@ -657,7 +657,7 @@ function InspectionRow({
           </div>
 
           {/* Time + Address */}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-xs text-primary-700/50">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-xs text-primary-700/75">
             <span className="inline-flex items-center gap-1">
               <Clock className="w-3 h-3 shrink-0" />
               {inspection.startTime} – {inspection.endTime}
@@ -672,14 +672,14 @@ function InspectionRow({
 
           {/* Completion window */}
           {farm.completionFrom && (
-            <div className="flex items-center gap-1 mt-1 text-[10px] text-primary-600/30">
+            <div className="flex items-center gap-1 mt-1 text-[10px] text-primary-600/55">
               <CalendarDays className="w-2.5 h-2.5 shrink-0" />
               Window: {format(parseISO(farm.completionFrom), "MMM d")} – {farm.completionUntil ? format(parseISO(farm.completionUntil), "MMM d") : "?"}
             </div>
           )}
 
           {/* Contact */}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-[11px] text-primary-700/35">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-[11px] text-primary-700/60">
             {farm.email && (
               <span className="inline-flex items-center gap-1">
                 <Mail className="w-3 h-3 shrink-0" />
@@ -695,7 +695,7 @@ function InspectionRow({
           </div>
 
           {farm.notes && (
-            <p className="mt-1.5 text-[10px] text-primary-600/30 inline-flex items-start gap-1">
+            <p className="mt-1.5 text-[10px] text-primary-600/55 inline-flex items-start gap-1">
               <FileText className="w-2.5 h-2.5 mt-0.5 shrink-0" />
               {farm.notes}
             </p>
@@ -712,7 +712,7 @@ function InspectionRow({
                   className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-[var(--radius-md)] transition-all duration-200 cursor-pointer ${
                     copiedEmail
                       ? "bg-primary-100 text-primary-700"
-                      : "bg-earth-100 text-primary-700/50 hover:bg-earth-200"
+                      : "bg-earth-100 text-primary-700/75 hover:bg-earth-200"
                   }`}
                 >
                   {copiedEmail ? <Check className="w-2.5 h-2.5" /> : <Copy className="w-2.5 h-2.5" />}
@@ -723,7 +723,7 @@ function InspectionRow({
                   className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-[var(--radius-md)] transition-all duration-200 cursor-pointer ${
                     copiedCall
                       ? "bg-primary-100 text-primary-700"
-                      : "bg-earth-100 text-primary-700/50 hover:bg-earth-200"
+                      : "bg-earth-100 text-primary-700/75 hover:bg-earth-200"
                   }`}
                 >
                   {copiedCall ? <Check className="w-2.5 h-2.5" /> : <PhoneCall className="w-2.5 h-2.5" />}
@@ -737,7 +737,7 @@ function InspectionRow({
               <div className="relative">
                 <button
                   onClick={() => setShowActions(!showActions)}
-                  className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-[var(--radius-md)] bg-earth-50 text-primary-600/40 hover:bg-earth-100 hover:text-primary-600/60 transition-all duration-200 cursor-pointer"
+                  className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-[var(--radius-md)] bg-earth-50 text-primary-600/65 hover:bg-earth-100 hover:text-primary-600/60 transition-all duration-200 cursor-pointer"
                 >
                   {showActions ? <X className="w-2.5 h-2.5" /> : <Shield className="w-2.5 h-2.5" />}
                   Edit
@@ -780,7 +780,7 @@ function InspectionRow({
               ))}
             </div>
           )}
-          <span className="text-[10px] text-primary-600/40 font-medium">
+          <span className="text-[10px] text-primary-600/65 font-medium">
             {farm.estimatedDurationHours}h est.
           </span>
         </div>

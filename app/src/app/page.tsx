@@ -17,10 +17,12 @@ import {
   AppStep,
   TravelPrefs,
   ScheduleEdit,
+  TripPlan,
 } from "@/lib/types";
 import { applyEdit } from "@/lib/schedule-editor";
+import { tripsToTripPlans } from "@/lib/scheduler";
 import { SAMPLE_PREFERENCES } from "@/lib/sample-data";
-import { useScheduler } from "@/hooks/useScheduler";
+import { useScheduler, SchedulerMode } from "@/hooks/useScheduler";
 import UploadStep from "@/components/steps/UploadStep";
 import PreferencesStep from "@/components/steps/PreferencesStep";
 import WorkspaceStep from "@/components/steps/WorkspaceStep";
@@ -51,12 +53,16 @@ function loadPrefsFromStorage(): InspectorPreferences {
   }
 }
 
+export type WorkspacePhase = "travel" | "full";
+
 export default function Home() {
   const [step, setStep] = useState<AppStep>("upload");
   const [farms, setFarms] = useState<Farm[]>([]);
   const [prefs, setPrefs] = useState<InspectorPreferences>(loadPrefsFromStorage);
   const [travelPrefs, setTravelPrefs] = useState<TravelPrefs | null>(null);
   const [farmUnavailableDates, setFarmUnavailableDates] = useState<Record<string, string[]>>({});
+  const [workspacePhase, setWorkspacePhase] = useState<WorkspacePhase>("travel");
+  const [lockedTripPlans, setLockedTripPlans] = useState<TripPlan[]>([]);
 
   // Persist preferences to localStorage
   useEffect(() => {
@@ -115,13 +121,23 @@ export default function Home() {
     setFarmUnavailableDates((prev) => applyEdit(edit, prev));
   }, []);
 
+  const handleApproveTravelTrips = useCallback((approvedSchedule: import("@/lib/types").Schedule) => {
+    // Lock approved travel trips as TripPlans for the full schedule
+    const plans = tripsToTripPlans(approvedSchedule.trips);
+    setLockedTripPlans(plans);
+    setWorkspacePhase("full");
+    setFarmUnavailableDates({});
+  }, []);
+
   // Live scheduler: only compute when on workspace or contact step
   const schedulerPrefs = (step === "workspace" || step === "contact") ? prefs : null;
+  const schedulerMode: SchedulerMode = (step === "workspace" && workspacePhase === "travel") ? "travel_only" : "full";
   const { schedule, isComputing } = useScheduler(
     farms,
     schedulerPrefs,
-    undefined,
-    Object.keys(farmUnavailableDates).length > 0 ? farmUnavailableDates : undefined
+    workspacePhase === "full" ? lockedTripPlans : undefined,
+    Object.keys(farmUnavailableDates).length > 0 ? farmUnavailableDates : undefined,
+    schedulerMode
   );
 
   // ── Step navigation ──
@@ -131,9 +147,13 @@ export default function Home() {
     if (target === "upload") {
       setTravelPrefs(null);
       setFarmUnavailableDates({});
+      setWorkspacePhase("travel");
+      setLockedTripPlans([]);
     }
     if (target === "preferences") {
       setFarmUnavailableDates({});
+      setWorkspacePhase("travel");
+      setLockedTripPlans([]);
     }
     setStep(target);
   }, []);
@@ -269,8 +289,10 @@ export default function Home() {
                 workEndHour: 17,
                 availableDays: ["Mon", "Tue", "Wed", "Thu", "Fri"],
               }}
+              workspacePhase={workspacePhase}
               onPrefsChange={setPrefs}
               onScheduleEdit={handleScheduleEdit}
+              onApproveTravelTrips={handleApproveTravelTrips}
               onComplete={() => setStep("contact")}
             />
           )}

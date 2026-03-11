@@ -1,18 +1,22 @@
 import { useState, useEffect, useRef, useTransition } from "react";
 import { Farm, InspectorPreferences, Schedule, TripPlan } from "@/lib/types";
-import { generateSchedule } from "@/lib/scheduler";
+import { generateSchedule, generateTravelTripsOnly } from "@/lib/scheduler";
 
 const DEBOUNCE_MS = 300;
 
+export type SchedulerMode = "full" | "travel_only";
+
 /**
  * Custom hook that runs the scheduler with debouncing and React transitions.
- * Returns the current schedule and a computing indicator.
+ * mode="travel_only" generates only travel trips (Phase A).
+ * mode="full" generates the complete schedule (Phase B or legacy).
  */
 export function useScheduler(
   farms: Farm[],
   prefs: InspectorPreferences | null,
   tripPlans?: TripPlan[],
-  farmUnavailableDates?: Record<string, string[]>
+  farmUnavailableDates?: Record<string, string[]>,
+  mode: SchedulerMode = "full"
 ): { schedule: Schedule | null; isComputing: boolean } {
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -31,7 +35,10 @@ export function useScheduler(
 
     timerRef.current = setTimeout(() => {
       startTransition(() => {
-        const result = generateSchedule(farms, prefs, tripPlans, farmUnavailableDates);
+        const result =
+          mode === "travel_only"
+            ? generateTravelTripsOnly(farms, prefs, farmUnavailableDates)
+            : generateSchedule(farms, prefs, tripPlans, farmUnavailableDates);
         setSchedule(result);
       });
     }, DEBOUNCE_MS);
@@ -41,7 +48,7 @@ export function useScheduler(
         clearTimeout(timerRef.current);
       }
     };
-  }, [farms, prefs, tripPlans, farmUnavailableDates]);
+  }, [farms, prefs, tripPlans, farmUnavailableDates, mode]);
 
   return { schedule, isComputing: isPending };
 }

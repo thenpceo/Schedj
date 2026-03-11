@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { createPortal } from "react-dom";
 import {
   X,
   ArrowRight,
@@ -30,6 +31,11 @@ export default function FloatingActionBar({
   const [showMoveDropdown, setShowMoveDropdown] = useState(false);
   const [showReturnDialog, setShowReturnDialog] = useState(false);
   const [returnReason, setReturnReason] = useState("");
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const count = selectedFarmIds.size;
 
@@ -53,7 +59,7 @@ export default function FloatingActionBar({
     return schedule.trips.filter((trip) => !selectedFarmTripIds.has(trip.id) || selectedFarmTripIds.size > 1);
   }, [schedule.trips, selectedFarmTripIds]);
 
-  if (count === 0) return null;
+  if (count === 0 || !mounted) return null;
 
   const farmIds = Array.from(selectedFarmIds);
 
@@ -78,7 +84,7 @@ export default function FloatingActionBar({
     return `Trip ${trip.tripNumber} — ${type} · ${trip.startDate}`;
   };
 
-  return (
+  return createPortal(
     <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 animate-fade-in-up">
       <div className="bg-white/95 backdrop-blur-xl border border-earth-200 rounded-[var(--radius-lg)] shadow-2xl shadow-earth-900/10 px-5 py-3 flex items-center gap-3">
         {/* Selection count */}
@@ -186,6 +192,7 @@ export default function FloatingActionBar({
           <X className="w-4 h-4" />
         </button>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
