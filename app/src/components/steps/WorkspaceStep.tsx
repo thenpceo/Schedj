@@ -9,6 +9,7 @@ import {
   Redo2,
   AlertTriangle,
   Loader2,
+  ArrowRight,
 } from "lucide-react";
 import {
   Farm,
@@ -49,6 +50,7 @@ interface WorkspaceStepProps {
   travelPrefs: TravelPrefs;
   onPrefsChange: (prefs: InspectorPreferences) => void;
   onScheduleEdit: (edit: ScheduleEdit) => void;
+  onComplete: () => void;
 }
 
 function convertTripsToV3(schedule: Schedule): TripV3[] {
@@ -90,6 +92,7 @@ export default function WorkspaceStep({
   travelPrefs,
   onPrefsChange,
   onScheduleEdit,
+  onComplete,
 }: WorkspaceStepProps) {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("trips");
   const [selectedFarmIds, setSelectedFarmIds] = useState<Set<string>>(new Set());
@@ -354,6 +357,17 @@ export default function WorkspaceStep({
         onReturnToSupervisor={handleReturnToSupervisor}
         onClearSelection={handleClearSelection}
       />
+
+      {/* Proceed to Contact */}
+      <div className="mt-6 flex justify-end">
+        <button
+          onClick={onComplete}
+          className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-primary-600 to-primary-700 text-white font-semibold rounded-[var(--radius-lg)] hover:from-primary-700 hover:to-primary-800 transition-all duration-200 shadow-md shadow-primary-600/20 cursor-pointer active:scale-[0.98]"
+        >
+          Proceed to Contact
+          <ArrowRight className="w-4 h-4" />
+        </button>
+      </div>
 
       {/* Returned farms bucket */}
       {returnedFarms.length > 0 && (

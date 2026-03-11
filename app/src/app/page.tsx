@@ -271,6 +271,7 @@ export default function Home() {
               }}
               onPrefsChange={setPrefs}
               onScheduleEdit={handleScheduleEdit}
+              onComplete={() => setStep("contact")}
             />
           )}
 
